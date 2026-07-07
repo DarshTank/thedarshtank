@@ -1,4 +1,4 @@
-# The Darsh Tank
+# thedarshtank
 
 > A premium, high-aesthetic, cinematic developer portfolio and retro-projection dashboard. Styled after vintage movie theaters, glowing amber neon console readouts, and analog projection equipment.
 
