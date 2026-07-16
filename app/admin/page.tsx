@@ -14,6 +14,7 @@ import {
   getDoc,
   setDoc,
   deleteDoc,
+  onSnapshot,
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import { auth, db, storage, googleProvider, isConfigured } from "../../lib/firebase";
@@ -34,7 +35,7 @@ import {
   EyeOff,
 } from "lucide-react";
 
-// Inline SVG components to bypass old lucide-react version lack of Github/Linkedin
+import { type VisitorRecord, computeMetrics, parseBrowserName, formatRelativeTime } from "../../lib/analytics";
 const Github = (props: React.SVGProps<SVGSVGElement>) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
@@ -114,8 +115,18 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState<
-    "projects" | "experiences" | "socials" | "resume" | "starring" | "backstory" | "skills" | "credits"
+    "projects" | "experiences" | "socials" | "resume" | "starring" | "backstory" | "skills" | "credits" | "analytics"
   >("projects");
+
+  // Analytics states
+  const [analyticsData, setAnalyticsData] = useState<VisitorRecord[]>([]);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [analyticsError, setAnalyticsError] = useState("");
+  const [visitorSearch, setVisitorSearch] = useState("");
+  const [visitorSortField, setVisitorSortField] = useState<string>("lastSeen");
+  const [visitorSortAsc, setVisitorSortAsc] = useState(false);
+  const [visitorPage, setVisitorPage] = useState(1);
+  const [selectedVisitors, setSelectedVisitors] = useState<string[]>([]);
 
   // Dynamic content states
   const [projectsList, setProjectsList] = useState<ProjectData[]>([]);
@@ -181,6 +192,50 @@ export default function AdminPage() {
 
     return () => unsubscribe();
   }, []);
+
+  // Load saved tab on mount
+  useEffect(() => {
+    const savedTab = localStorage.getItem("adminActiveTab");
+    if (savedTab && [
+      "projects", "experiences", "socials", "resume", "starring", "backstory", "skills", "credits", "analytics"
+    ].includes(savedTab)) {
+      setActiveTab(savedTab as any);
+    }
+  }, []);
+
+  // Sync tab to localStorage
+  useEffect(() => {
+    if (activeTab) {
+      localStorage.setItem("adminActiveTab", activeTab);
+    }
+  }, [activeTab]);
+
+  // Real-time visitor logs subscription (onSnapshot)
+  useEffect(() => {
+    if (!isConfigured || !user) return;
+
+    setAnalyticsLoading(true);
+    setAnalyticsError("");
+
+    const unsubscribe = onSnapshot(
+      collection(db, "visitors"),
+      (snap) => {
+        const records = snap.docs.map((d) => ({
+          id: d.id,
+          ...d.data(),
+        })) as VisitorRecord[];
+        setAnalyticsData(records);
+        setAnalyticsLoading(false);
+      },
+      (err: any) => {
+        console.error("Real-time analytics subscription error:", err);
+        setAnalyticsError(err.message || "Failed to subscribe to visitor logs.");
+        setAnalyticsLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [user]);
 
   const showStatus = (text: string, type: "success" | "error" = "success") => {
     setStatusMessage({ text, type });
@@ -257,6 +312,60 @@ export default function AdminPage() {
     } catch (err: any) {
       console.error("Error loading admin data:", err);
       showStatus("Failed to load database records.", "error");
+    }
+  };
+
+  const fetchAnalytics = async () => {
+    if (!isConfigured) return;
+    setAnalyticsLoading(true);
+    setAnalyticsError("");
+    try {
+      const snap = await getDocs(collection(db, "visitors"));
+      const records = snap.docs.map((d) => ({
+        id: d.id,
+        ...d.data(),
+      })) as VisitorRecord[];
+      setAnalyticsData(records);
+    } catch (err: any) {
+      console.error("Error fetching analytics data:", err);
+      setAnalyticsError(err.message || "Failed to fetch analytics records.");
+    } finally {
+      setAnalyticsLoading(false);
+    }
+  };
+
+  const deleteVisitor = async (ipAddress: string) => {
+    if (!isConfigured || !window.confirm(`Are you sure you want to delete visitor record for IP: ${ipAddress}?`)) return;
+    try {
+      const docId = ipAddress.replace(/[.:]/g, "_");
+      await deleteDoc(doc(db, "visitors", docId));
+      showStatus(`Deleted record for ${ipAddress}.`);
+      setSelectedVisitors(prev => prev.filter(ip => ip !== ipAddress));
+      await fetchAnalytics();
+    } catch (err: any) {
+      console.error("Failed to delete visitor document:", err);
+      showStatus("Failed to delete record.", "error");
+    }
+  };
+
+  const deleteSelectedVisitors = async () => {
+    if (!isConfigured || selectedVisitors.length === 0) return;
+    const confirmMessage = `Are you sure you want to delete ${selectedVisitors.length} selected visitor record(s)?`;
+    if (!window.confirm(confirmMessage)) return;
+
+    try {
+      await Promise.all(
+        selectedVisitors.map((ip) => {
+          const docId = ip.replace(/[.:]/g, "_");
+          return deleteDoc(doc(db, "visitors", docId));
+        })
+      );
+      showStatus(`Successfully deleted ${selectedVisitors.length} record(s).`);
+      setSelectedVisitors([]);
+      await fetchAnalytics();
+    } catch (err: any) {
+      console.error("Failed to delete selected visitors:", err);
+      showStatus("Failed to delete some records.", "error");
     }
   };
 
@@ -641,6 +750,106 @@ export default function AdminPage() {
     );
   }
 
+  // Pre-calculate visitor analytics logic outside the JSX to avoid parser parsing errors
+  const metrics = computeMetrics(analyticsData);
+  const queryStr = visitorSearch.toLowerCase().trim();
+  const sortedAndFilteredVisitors = analyticsData
+    .filter((v) => {
+      if (!queryStr) return true;
+      return (
+        v.ip?.toLowerCase().includes(queryStr) ||
+        (v.country || "").toLowerCase().includes(queryStr) ||
+        (v.city || "").toLowerCase().includes(queryStr) ||
+        (v.isp || "").toLowerCase().includes(queryStr) ||
+        parseBrowserName(v.userAgent).toLowerCase().includes(queryStr)
+      );
+    })
+    .sort((a, b) => {
+      let valA: any = "";
+      let valB: any = "";
+
+      if (visitorSortField === "ip") {
+        valA = a.ip ?? "";
+        valB = b.ip ?? "";
+      } else if (visitorSortField === "location") {
+        valA = `${a.city ?? ""}, ${a.country ?? ""}`;
+        valB = `${b.city ?? ""}, ${b.country ?? ""}`;
+      } else if (visitorSortField === "browser") {
+        valA = parseBrowserName(a.userAgent);
+        valB = parseBrowserName(b.userAgent);
+      } else if (visitorSortField === "visitCount") {
+        valA = a.visitCount ?? 0;
+        valB = b.visitCount ?? 0;
+      } else if (visitorSortField === "lastSeen") {
+        valA = a.lastSeen ?? "";
+        valB = b.lastSeen ?? "";
+      } else if (visitorSortField === "entryTime") {
+        valA = a.entryTime ?? "";
+        valB = b.entryTime ?? "";
+      } else if (visitorSortField === "exitTime") {
+        valA = a.exitTime ?? "";
+        valB = b.exitTime ?? "";
+      } else if (visitorSortField === "resumeClicks") {
+        valA = a.resumeClicks ?? 0;
+        valB = b.resumeClicks ?? 0;
+      }
+
+      if (typeof valA === "number" && typeof valB === "number") {
+        return visitorSortAsc ? valA - valB : valB - valA;
+      }
+      return visitorSortAsc
+        ? String(valA).localeCompare(String(valB))
+        : String(valB).localeCompare(String(valA));
+    });
+
+  // Pagination helper calculations
+  const visitorPageSize = 10;
+  const totalItems = sortedAndFilteredVisitors.length;
+  const totalPages = Math.max(Math.ceil(totalItems / visitorPageSize), 1);
+  const currentPage = Math.min(visitorPage, totalPages);
+  const startIndex = (currentPage - 1) * visitorPageSize;
+  const paginatedVisitors = sortedAndFilteredVisitors.slice(startIndex, startIndex + visitorPageSize);
+
+  const isAllOnPageSelected =
+    paginatedVisitors.length > 0 &&
+    paginatedVisitors.every((v) => selectedVisitors.includes(v.ip || "unknown"));
+
+  const toggleSelectAll = () => {
+    if (isAllOnPageSelected) {
+      const pageIps = paginatedVisitors.map((v) => v.ip || "unknown");
+      setSelectedVisitors((prev) => prev.filter((ip) => !pageIps.includes(ip)));
+    } else {
+      const pageIps = paginatedVisitors.map((v) => v.ip || "unknown");
+      setSelectedVisitors((prev) => {
+        const next = [...prev];
+        pageIps.forEach((ip) => {
+          if (!next.includes(ip)) next.push(ip);
+        });
+        return next;
+      });
+    }
+  };
+
+  const toggleSelectRow = (ip: string) => {
+    setSelectedVisitors((prev) =>
+      prev.includes(ip) ? prev.filter((item) => item !== ip) : [...prev, ip]
+    );
+  };
+
+  const handleHeaderClick = (field: string) => {
+    if (visitorSortField === field) {
+      setVisitorSortAsc(!visitorSortAsc);
+    } else {
+      setVisitorSortField(field);
+      setVisitorSortAsc(false);
+    }
+  };
+
+  const getSortIndicator = (field: string) => {
+    if (visitorSortField !== field) return "";
+    return visitorSortAsc ? " ▲" : " ▼";
+  };
+
   // --- ADMIN PORTAL INTERFACE ---
   return (
     <main className="min-h-screen bg-black text-foreground font-mono text-xs py-28 px-4 sm:px-8 relative overflow-x-hidden">
@@ -726,6 +935,7 @@ export default function AdminPage() {
               { id: "backstory", label: "06. Backstory Notes" },
               { id: "skills", label: "07. Trade Tools" },
               { id: "credits", label: "08. End Credits" },
+              { id: "analytics", label: "09. Analytics" },
             ].map((tab) => {
               const isActive = activeTab === tab.id;
               return (
@@ -1683,6 +1893,286 @@ export default function AdminPage() {
               </div>
             </div>
           </form>
+        )}
+
+        {/* ==================== ANALYTICS TAB ==================== */}
+        {activeTab === "analytics" && (
+          <div className="space-y-6">
+            <div className="border border-rule bg-card p-6 sm:p-8 space-y-4 relative overflow-hidden backdrop-blur-sm">
+              <div className="absolute inset-0 bg-[radial-gradient(circle_at_bottom_left,rgba(255,123,0,0.03),transparent_50%)] pointer-events-none" />
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-rule pb-3 gap-2 relative z-10">
+                <h3 className="text-sm text-ember uppercase tracking-widest font-semibold font-mono flex items-center gap-2">
+                  ✦ Audience Analytics & Telemetry
+                </h3>
+                <button
+                  onClick={fetchAnalytics}
+                  disabled={analyticsLoading}
+                  className="font-mono text-[9px] uppercase tracking-wider text-ember hover:text-white border border-ember/30 bg-ember/5 hover:bg-ember px-3 py-1 transition-all disabled:opacity-40"
+                >
+                  {analyticsLoading ? "Synching..." : "Refresh Logs"}
+                </button>
+              </div>
+
+              {/* Loader */}
+              {analyticsLoading && analyticsData.length === 0 && (
+                <div className="py-12 text-center text-foreground/45 font-mono text-[10px] uppercase tracking-widest animate-pulse relative z-10">
+                  Initializing telemetry feed...
+                </div>
+              )}
+
+              {/* Error */}
+              {analyticsError && (
+                <div className="p-4 border border-red-500/40 bg-red-950/20 text-red-400 text-xs font-mono text-left space-y-2 relative z-10">
+                  <p className="uppercase tracking-wider font-semibold text-[9px] text-red-500">✦ Connection Failure</p>
+                  <p className="text-[10px] text-foreground/80">{analyticsError}</p>
+                  <button
+                    onClick={fetchAnalytics}
+                    className="underline text-red-400 hover:text-red-300 font-mono text-[10px] uppercase"
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
+
+              {/* Empty state */}
+              {isConfigured && !analyticsLoading && !analyticsError && analyticsData.length === 0 && (
+                <div className="border border-dashed border-rule p-12 text-center text-foreground/30 font-mono text-[10px] uppercase tracking-wider relative z-10">
+                  No visitors recorded yet.
+                </div>
+              )}
+
+              {/* Dashboard content */}
+              {isConfigured && !analyticsLoading && !analyticsError && analyticsData.length > 0 && (
+                <div className="space-y-8 relative z-10">
+                  {/* Aggregate metric cards */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="border border-rule bg-card/45 p-6">
+                      <p className="font-mono text-[9px] uppercase tracking-[0.3em] text-foreground/50 mb-2">
+                        Unique Visitors
+                      </p>
+                      <p className="font-display text-4xl italic text-ember">
+                        {metrics.uniqueVisitorCount}
+                      </p>
+                    </div>
+                    <div className="border border-rule bg-card/45 p-6">
+                      <p className="font-mono text-[9px] uppercase tracking-[0.3em] text-foreground/50 mb-2">
+                        Total Visits
+                      </p>
+                      <p className="font-display text-4xl italic text-ember">
+                        {metrics.totalVisitCount}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Breakdowns */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Country breakdown */}
+                    <div className="border border-rule bg-card/45 p-6 space-y-3">
+                      <p className="font-mono text-[9px] uppercase tracking-[0.3em] text-foreground/50 border-b border-rule pb-3">
+                        Top Countries
+                      </p>
+                      {metrics.countryBreakdown.map((entry) => (
+                        <div key={entry.country} className="flex items-center justify-between border-b border-rule/40 pb-2">
+                          <span className="font-mono text-xs text-foreground/80">{entry.country}</span>
+                          <span className="font-mono text-xs text-ember">{entry.count}</span>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Browser breakdown */}
+                    <div className="border border-rule bg-card/45 p-6 space-y-3">
+                      <p className="font-mono text-[9px] uppercase tracking-[0.3em] text-foreground/50 border-b border-rule pb-3">
+                        Top Browsers
+                      </p>
+                      {metrics.browserBreakdown.map((entry) => (
+                        <div key={entry.browser} className="flex items-center justify-between border-b border-rule/40 pb-2">
+                          <span className="font-mono text-xs text-foreground/80">{entry.browser}</span>
+                          <span className="font-mono text-xs text-ember">{entry.count}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Visitors Table Header controls */}
+                  <div className="border border-rule bg-card/45 space-y-4 p-4">
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                      <div className="flex items-center gap-3">
+                        <p className="font-mono text-[9px] uppercase tracking-[0.3em] text-foreground/50">
+                          Visitor Log ({sortedAndFilteredVisitors.length} recorded)
+                        </p>
+                        {selectedVisitors.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={deleteSelectedVisitors}
+                            className="bg-red-950/40 hover:bg-red-900/60 border border-red-500/30 text-red-400 px-3 py-1 font-mono text-[10px] uppercase tracking-widest flex items-center gap-1.5 transition-all shadow-[0_0_10px_rgba(239,68,68,0.1)] animate-fade-in"
+                          >
+                            <Trash className="h-3 w-3" />
+                            Delete Selected ({selectedVisitors.length})
+                          </button>
+                        )}
+                      </div>
+                      <input
+                        type="text"
+                        placeholder="Search IP, Country, City, Browser..."
+                        value={visitorSearch}
+                        onChange={(e) => {
+                          setVisitorSearch(e.target.value);
+                          setVisitorPage(1);
+                        }}
+                        className="bg-black border border-rule/65 px-3 py-1.5 outline-none focus:border-ember text-[11px] font-mono text-foreground placeholder-foreground/30 w-full sm:w-64 transition-all"
+                      />
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full">
+                        <thead>
+                          <tr className="border-b border-rule">
+                            <th className="w-10 px-4 py-3 text-left">
+                              <input
+                                type="checkbox"
+                                checked={isAllOnPageSelected}
+                                onChange={toggleSelectAll}
+                                className="accent-ember h-3.5 w-3.5 cursor-pointer bg-black border border-rule rounded-sm focus:ring-0 outline-none"
+                              />
+                            </th>
+                            {[
+                              { id: "ip", label: "IP Address" },
+                              { id: "location", label: "Location" },
+                              { id: "browser", label: "Browser" },
+                              { id: "visitCount", label: "Visits" },
+                              { id: "resumeClicks", label: "Resume" },
+                              { id: "entryTime", label: "Entry Time" },
+                              { id: "exitTime", label: "Exit Time" }
+                            ].map((col) => (
+                              <th
+                                key={col.id}
+                                onClick={() => handleHeaderClick(col.id)}
+                                className="text-left px-4 py-3 font-mono text-[9px] uppercase tracking-widest text-foreground/40 cursor-pointer select-none hover:text-foreground transition-colors"
+                              >
+                                {col.label}
+                                <span className="text-ember font-bold">{getSortIndicator(col.id)}</span>
+                              </th>
+                            ))}
+                            <th className="text-right px-4 py-3 font-mono text-[9px] uppercase tracking-widest text-foreground/40 select-none">
+                              Actions
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {paginatedVisitors.length === 0 ? (
+                            <tr>
+                              <td colSpan={9} className="text-center py-6 font-mono text-xs text-foreground/35">
+                                No records match search query.
+                              </td>
+                            </tr>
+                          ) : (
+                            paginatedVisitors.map((row, i) => {
+                              const ipKey = row.ip || "unknown";
+                              const isSelected = selectedVisitors.includes(ipKey);
+                              const isOnline = !row.exitTime || (row.entryTime && new Date(row.exitTime) < new Date(row.entryTime));
+                              return (
+                                <tr key={row.id || i} className={`border-b border-rule/40 transition-colors ${isSelected ? 'bg-ember/[0.03] hover:bg-ember/[0.05]' : 'hover:bg-white/[0.02]'}`}>
+                                  <td className="px-4 py-3 text-left">
+                                    <input
+                                      type="checkbox"
+                                      checked={isSelected}
+                                      onChange={() => toggleSelectRow(ipKey)}
+                                      className="accent-ember h-3.5 w-3.5 cursor-pointer bg-black border border-rule rounded-sm focus:ring-0 outline-none"
+                                    />
+                                  </td>
+                                  <td className="px-4 py-3 font-mono text-[11px] text-foreground/80">{row.ip || "unknown"}</td>
+                                  <td className="px-4 py-3 font-mono text-[11px] text-foreground/80">
+                                    {row.city || "Unknown"}, {row.country || "Unknown"}
+                                  </td>
+                                  <td className="px-4 py-3 font-mono text-[11px] text-foreground/80">{parseBrowserName(row.userAgent)}</td>
+                                  <td className="px-4 py-3 font-mono text-[11px] text-ember font-semibold">{row.visitCount}</td>
+                                  <td className="px-4 py-3 font-mono text-[11px] text-foreground/80">{row.resumeClicks ?? 0}</td>
+                                  <td className="px-4 py-3 font-mono text-[11px] text-foreground/50" title={row.entryTime}>
+                                    {row.entryTime ? formatRelativeTime(row.entryTime) : "—"}
+                                  </td>
+                                  <td className="px-4 py-3 font-mono text-[11px]">
+                                    {isOnline ? (
+                                      <span className="inline-flex items-center gap-1.5 text-ember font-bold">
+                                        <span className="relative flex h-1.5 w-1.5">
+                                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-ember opacity-75"></span>
+                                          <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-ember"></span>
+                                        </span>
+                                        Online
+                                      </span>
+                                    ) : (
+                                      <span className="text-foreground/40" title={row.exitTime}>
+                                        {formatRelativeTime(row.exitTime!)}
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="px-4 py-2 text-right">
+                                    <button
+                                      type="button"
+                                      onClick={() => deleteVisitor(row.ip)}
+                                      className="text-red-500/70 hover:text-red-400 p-1 bg-red-950/0 hover:bg-red-950/20 transition-all rounded"
+                                      title="Delete Visitor Record"
+                                    >
+                                      <Trash className="h-3.5 w-3.5" />
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Pagination Controls */}
+                    {totalPages > 1 && (
+                      <div className="flex items-center justify-between border-t border-rule/40 pt-4 font-mono text-[11px]">
+                        <span className="text-foreground/40">
+                          Showing {startIndex + 1}-{Math.min(startIndex + visitorPageSize, totalItems)} of {totalItems}
+                        </span>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => setVisitorPage(1)}
+                            disabled={currentPage === 1}
+                            className="px-2.5 py-1.5 border border-rule/50 bg-black text-foreground hover:bg-card disabled:opacity-30 disabled:hover:bg-black transition-colors"
+                          >
+                            &lt;&lt;
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setVisitorPage(p => Math.max(p - 1, 1))}
+                            disabled={currentPage === 1}
+                            className="px-2.5 py-1.5 border border-rule/50 bg-black text-foreground hover:bg-card disabled:opacity-30 disabled:hover:bg-black transition-colors"
+                          >
+                            &lt;
+                          </button>
+                          <span className="px-4 py-1.5 border border-rule/30 bg-card/20 text-foreground/80">
+                            Page {currentPage} of {totalPages}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setVisitorPage(p => Math.min(p + 1, totalPages))}
+                            disabled={currentPage === totalPages}
+                            className="px-2.5 py-1.5 border border-rule/50 bg-black text-foreground hover:bg-card disabled:opacity-30 disabled:hover:bg-black transition-colors"
+                          >
+                            &gt;
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setVisitorPage(totalPages)}
+                            disabled={currentPage === totalPages}
+                            className="px-2.5 py-1.5 border border-rule/50 bg-black text-foreground hover:bg-card disabled:opacity-30 disabled:hover:bg-black transition-colors"
+                          >
+                            &gt;&gt;
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         )}
       </div>
     </main>

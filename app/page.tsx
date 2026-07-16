@@ -470,6 +470,116 @@ export default function Index() {
     fetchData();
   }, []);
 
+  // Visitor tracking — fires once per browser session after countdown is complete (Req 1.1–1.6, 10.1, 10.4)
+  useEffect(() => {
+    if (intro) return;
+
+    const fire = async () => {
+      try {
+        let sessionId = "";
+        try {
+          sessionId = sessionStorage.getItem("vsid") || "";
+          if (!sessionId) {
+            if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+              sessionId = crypto.randomUUID();
+            } else {
+              sessionId = Math.random().toString(36).substring(2) + Date.now().toString(36);
+            }
+            sessionStorage.setItem("vsid", sessionId);
+          }
+        } catch {
+          sessionId = "fallback-" + Math.random().toString(36).substring(2);
+        }
+
+        // Try to fetch public IP so localhost dev shows actual location
+        let clientIp = "";
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 2000);
+          const res = await fetch("https://api.ipify.org?format=json", { signal: controller.signal });
+          clearTimeout(timeoutId);
+          if (res.ok) {
+            const data = await res.json();
+            clientIp = data.ip || "";
+            try {
+              sessionStorage.setItem("dt_client_ip", clientIp);
+            } catch {
+              // ignore
+            }
+          }
+        } catch {
+          // silent fallback
+        }
+
+        await fetch("/api/track-visitor", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionId,
+            userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "",
+            clientIp,
+          }),
+        });
+      } catch {
+        // silent — must not affect portfolio render
+      }
+    };
+    fire();
+  }, [intro]);
+
+  // Exit tracking — fires when the visitor leaves the page
+  useEffect(() => {
+    if (intro) return;
+
+    const handleExit = () => {
+      try {
+        const sessionId = sessionStorage.getItem("vsid") || "";
+        if (!sessionId) return;
+        const clientIp = sessionStorage.getItem("dt_client_ip") || "";
+
+        const payload = JSON.stringify({ sessionId, clientIp });
+
+        if (typeof navigator !== "undefined" && navigator.sendBeacon) {
+          const blob = new Blob([payload], { type: "application/json" });
+          navigator.sendBeacon("/api/track-exit", blob);
+        } else {
+          fetch("/api/track-exit", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: payload,
+            keepalive: true,
+          }).catch(() => {});
+        }
+      } catch {
+        // silent
+      }
+    };
+
+    window.addEventListener("pagehide", handleExit, { capture: true });
+    window.addEventListener("beforeunload", handleExit, { capture: true });
+
+    return () => {
+      window.removeEventListener("pagehide", handleExit, { capture: true });
+      window.removeEventListener("beforeunload", handleExit, { capture: true });
+    };
+  }, [intro]);
+
+  // Resume click tracking — fires when the visitor clicks or downloads the resume
+  const trackResumeClick = async () => {
+    try {
+      const sessionId = sessionStorage.getItem("vsid") || "";
+      const clientIp = sessionStorage.getItem("dt_client_ip") || "";
+
+      await fetch("/api/track-resume", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, clientIp }),
+      });
+    } catch {
+      // silent
+    }
+  };
+
   const handleContactSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!contactEmail || !contactSubject || !contactMessage) return;
@@ -532,7 +642,7 @@ export default function Index() {
 
       {/* TOP HUD — projection booth */}
       <header className="fixed left-0 right-0 top-9 z-50 sm:top-14">
-        <div className="mx-auto flex max-w-[1400px] flex-wrap items-center justify-between gap-2 px-4 py-3 font-mono text-[10px] uppercase tracking-[0.18em] sm:px-6 sm:tracking-[0.3em]">
+        <div className="mx-auto flex max-w-[1400px] flex-wrap items-center justify-between gap-2 px-6 py-3 font-mono text-[10px] uppercase tracking-[0.18em] sm:px-10 md:px-16 sm:tracking-[0.3em]">
           <div
             className="flex min-h-8 cursor-default items-center gap-3 border border-rule bg-black/60 px-3 py-1.5 backdrop-blur"
             onClick={() => setAgeClicks((c) => c + 1)}
@@ -589,7 +699,7 @@ export default function Index() {
         <div className="flare" style={{ top: "12%", left: "8%" }} />
         <div className="flare" style={{ bottom: "18%", right: "10%", animationDelay: "2s" }} />
 
-        <div className="relative mx-auto max-w-[1400px] px-4 pb-24 pt-36 sm:px-6 md:pt-48">
+        <div className="relative mx-auto max-w-[1400px] px-6 pb-24 pt-36 sm:px-10 md:px-16 md:pt-48">
           <div className="fade-up">
             <Slate act="ACT I" title="THE OPENING SHOT" scene="01" />
           </div>
@@ -642,6 +752,7 @@ export default function Index() {
                   href={resumeUrl}
                   target="_blank"
                   rel="noreferrer"
+                  onClick={trackResumeClick}
                   className="link-slide inline-flex min-h-11 items-center gap-2 text-sm hover:text-ember"
                 >
                   Resume <ArrowUpRight className="icon-nudge h-4 w-4" />
@@ -687,7 +798,7 @@ export default function Index() {
       {/* ============== ACT II — THE BODY OF WORK ============== */}
       <section id="act-ii" className="relative border-b border-rule overflow-hidden">
         <div className="flare" style={{ top: "20%", right: "5%", animationDelay: "1s" }} />
-        <div className="mx-auto max-w-[1400px] px-4 py-20 sm:px-6 md:py-36">
+        <div className="mx-auto max-w-[1400px] px-6 py-20 sm:px-10 md:px-16 md:py-36">
           <div className="fade-up">
             <Slate act="ACT II" title="THE BODY OF WORK" scene="02" />
           </div>
@@ -723,17 +834,17 @@ export default function Index() {
             {dynamicProjects.map((p, idx) => (
               <li
                 key={p.no || p.id}
-                className="card-lift group relative grid grid-cols-12 gap-4 border-b border-rule py-12 transition-colors hover:bg-black/30 md:py-20 cursor-[url('data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2224%22%20height%3D%2224%22%20viewBox%3D%200%200%2024%2024%22%3E%3Ccircle%20cx%3D%2212%22%20cy%3D%2212%22%20r%3D%2210%22%20fill%3D%22none%22%20stroke%3D%22%23e8793a%22%20stroke-width%3D%222%22%2F%3E%3Ccircle%20cx%3D%2212%22%20cy%3D%2212%22%20r%3D%222%22%20fill%3D%22%23e8793a%22%2F%3E%3C%2Fsvg%3E')_12_12,pointer]"
+                className="card-lift group relative grid grid-cols-12 gap-6 border-b border-rule py-12 pl-8 pr-6 sm:px-10 sm:py-16 md:py-20 transition-colors hover:bg-black/30 cursor-[url('data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2224%22%20height%3D%2224%22%20viewBox%3D%200%200%2024%2024%22%3E%3Ccircle%20cx%3D%2212%22%20cy%3D%2212%22%20r%3D%2210%22%20fill%3D%22none%22%20stroke%3D%22%23e8793a%22%20stroke-width%3D%222%22%2F%3E%3Ccircle%20cx%3D%2212%22%20cy%3D%2212%22%20r%3D%222%22%20fill%3D%22%23e8793a%22%2F%3E%3C%2Fsvg%3E')_12_12,pointer]"
                 data-reveal="blur"
               >
                 {/* film perforation strip */}
-                <div className="absolute left-0 top-0 bottom-0 w-3 flex flex-col justify-around">
+                <div className="absolute left-2 sm:left-3 top-0 bottom-0 w-3 flex flex-col justify-around">
                   {Array.from({ length: 14 }).map((_, i) => (
                     <span key={i} className="block h-1.5 w-1.5 rounded-sm bg-foreground/15" />
                   ))}
                 </div>
 
-                <div className="col-span-12 pl-4 sm:col-span-2 md:col-span-1">
+                <div className="col-span-12 sm:col-span-2 md:col-span-1">
                   <span className="font-mono text-xs text-ember">{p.no}</span>
                   <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-foreground/40 mt-2">
                     Reel
@@ -811,7 +922,7 @@ export default function Index() {
         <div className="grain absolute inset-0 opacity-60" />
         <div className="absolute inset-0 vignette" />
         <div
-          className="relative mx-auto max-w-[1400px] px-4 py-20 text-center sm:px-6 md:py-32"
+          className="relative mx-auto max-w-[1400px] px-6 py-20 text-center sm:px-10 md:px-16 md:py-32"
           data-reveal="blur"
         >
           <p className="font-mono text-[10px] uppercase tracking-[0.5em] text-ember">
@@ -828,7 +939,7 @@ export default function Index() {
 
       {/* ============== ACT III — BACKSTORY ============== */}
       <section id="act-iii" className="relative border-b border-rule">
-        <div className="mx-auto max-w-[1400px] px-4 py-20 sm:px-6 md:py-36">
+        <div className="mx-auto max-w-[1400px] px-6 py-20 sm:px-10 md:px-16 md:py-36">
           <div className="fade-up">
             <Slate act="ACT III" title="THE BACKSTORY" scene="03" />
           </div>
@@ -969,7 +1080,7 @@ export default function Index() {
         className="relative border-b border-rule bg-foreground text-paper overflow-hidden"
       >
         <div className="absolute inset-0 grain opacity-40" />
-        <div className="relative mx-auto max-w-[1400px] px-4 py-20 sm:px-6 md:py-36" data-reveal>
+        <div className="relative mx-auto max-w-[1400px] px-6 py-20 sm:px-10 md:px-16 md:py-36" data-reveal>
           <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-paper/60">
             § Equipment List
           </p>
@@ -1006,7 +1117,7 @@ export default function Index() {
       <section id="contact" className="relative overflow-hidden vignette">
         <div className="flare" style={{ top: "10%", right: "20%" }} />
         <div className="flare" style={{ bottom: "20%", left: "15%", animationDelay: "3s" }} />
-        <div className="mx-auto max-w-[1400px] px-4 py-24 sm:px-6 md:py-44" data-reveal="blur">
+        <div className="mx-auto max-w-[1400px] px-6 py-24 sm:px-10 md:px-16 md:py-44" data-reveal="blur">
           <Slate act="EPILOGUE" title="THE FINAL SCENE" scene="FIN" />
           <h2
             className="font-display iris-in mt-8 text-[clamp(4.2rem,16vw,13rem)] leading-[0.85] tracking-tight"
@@ -1122,17 +1233,18 @@ export default function Index() {
                   Social Channels
                 </p>
                 {[
-                  ...(resumeUrl ? [{ Icon: FileDown, label: "Resume", href: resumeUrl }] : []),
+                  ...(resumeUrl ? [{ Icon: FileDown, label: "Resume", href: resumeUrl, onClick: trackResumeClick }] : []),
                   { Icon: Mail, label: "Email", href: `mailto:${dynamicSocials.email}` },
                   { Icon: Phone, label: dynamicSocials.phone, href: `tel:${dynamicSocials.phone.replace(/\s/g, "")}` },
                   { Icon: Github, label: "GitHub — more projects", href: dynamicSocials.github },
                   { Icon: Linkedin, label: "LinkedIn", href: dynamicSocials.linkedin },
-                ].map(({ Icon, label, href }) => (
+                ].map(({ Icon, label, href, onClick }) => (
                   <a
                     key={label}
                     href={href}
                     target={href.startsWith("http") || href.startsWith("/") ? "_blank" : undefined}
                     rel="noreferrer"
+                    onClick={onClick}
                     className="group flex min-h-12 items-center justify-between gap-4 border-b border-rule py-3 transition-colors hover:text-ember"
                   >
                     <span className="flex min-w-0 items-center gap-3 break-all">
@@ -1151,7 +1263,7 @@ export default function Index() {
       <section id="credits" className="relative bg-black overflow-hidden border-t border-rule">
         <div className="grain absolute inset-0 opacity-60" />
         <div
-          className="relative mx-auto max-w-[1400px] px-4 py-20 text-center sm:px-6 md:py-24"
+          className="relative mx-auto max-w-[1400px] px-6 py-20 text-center sm:px-10 md:px-16 md:py-24"
           data-reveal
         >
           <p className="font-mono text-[10px] uppercase tracking-[0.5em] text-ember mb-10">
@@ -1186,7 +1298,7 @@ export default function Index() {
 
       {/* POST-CREDITS STINGER */}
       <section className="relative bg-black py-16 text-center">
-        <div className="mx-auto max-w-[1400px] px-4" data-reveal>
+        <div className="mx-auto max-w-[1400px] px-6 sm:px-10 md:px-16" data-reveal>
           <p className="font-mono text-[10px] uppercase tracking-[0.4em] text-foreground/30">
             (stay seated — one more scene)
           </p>
