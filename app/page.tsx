@@ -14,7 +14,7 @@ import {
   FileDown,
 } from "lucide-react";
 import { db, isConfigured } from "../lib/firebase";
-import { collection, getDocs, doc, getDoc } from "firebase/firestore";
+import { collection, getDocs, doc, getDoc, addDoc } from "firebase/firestore";
 
 
 // Inline SVG components to bypass old lucide-react version lack of Github/Linkedin
@@ -397,6 +397,46 @@ export default function Index() {
   const [contactStatus, setContactStatus] = useState<"idle" | "sending" | "success" | "error" | "smtp_missing">("idle");
   const [contactError, setContactError] = useState("");
 
+  // Clapperboard Feedback State
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
+  const [feedbackName, setFeedbackName] = useState("");
+  const [feedbackEmail, setFeedbackEmail] = useState("");
+  const [feedbackRating, setFeedbackRating] = useState(0);
+  const [feedbackMessage, setFeedbackMessage] = useState("");
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  const [feedbackSuccess, setFeedbackSuccess] = useState(false);
+  const [feedbackError, setFeedbackError] = useState("");
+  const [snapHinge, setSnapHinge] = useState(false);
+  const [linkedinStatus, setLinkedinStatus] = useState("");
+  const [linkedinConnected, setLinkedinConnected] = useState(false);
+
+  // Placement Tips State
+  const [showTipsModal, setShowTipsModal] = useState(false);
+  const [tipsEmail, setTipsEmail] = useState("");
+  const [tipsMessage, setTipsMessage] = useState("");
+  const [tipsSubmitting, setTipsSubmitting] = useState(false);
+  const [tipsError, setTipsError] = useState("");
+  const [snapTipsHinge, setSnapTipsHinge] = useState(false);
+  const [tipsLinkedinStatus, setTipsLinkedinStatus] = useState("");
+  const [tipsIsProfessional, setTipsIsProfessional] = useState(false);
+  const [tipsCompanyName, setTipsCompanyName] = useState("");
+  const [tipsFullName, setTipsFullName] = useState("");
+  const [tipsContactNumber, setTipsContactNumber] = useState("");
+
+  // Cinematic Alert State
+  const [cinematicAlert, setCinematicAlert] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+  }>({
+    isOpen: false,
+    title: "",
+    message: "",
+  });
+
+  const stingerRef = useRef<HTMLDivElement>(null);
+  const paperTrailRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     if (!isConfigured) return;
 
@@ -469,6 +509,293 @@ export default function Index() {
 
     fetchData();
   }, []);
+
+  // IP block check — runs immediately (during countdown) and polls every 15 seconds so blocked visitors are restricted within that minute
+  useEffect(() => {
+    let clientIp = "";
+
+    const checkBlocked = async () => {
+      try {
+        if (!clientIp) {
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 2000);
+            const res = await fetch("https://api.ipify.org?format=json", { signal: controller.signal });
+            clearTimeout(timeoutId);
+            if (res.ok) {
+              const data = await res.json();
+              clientIp = data.ip || "";
+            }
+          } catch {
+            // Can't determine IP — allow through
+            return;
+          }
+        }
+
+        if (!clientIp) return;
+
+        const res = await fetch(`/api/check-blocked?ip=${encodeURIComponent(clientIp)}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.blocked === true) {
+            window.location.href = "/blocked";
+          }
+        }
+      } catch {
+        // Fail-open: if the check fails, allow the visitor through
+      }
+    };
+
+    if (typeof window !== "undefined") {
+      setLinkedinConnected(sessionStorage.getItem("linkedinConnected") === "true");
+    }
+
+    checkBlocked();
+
+    const interval = setInterval(checkBlocked, 15000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Clapperboard trigger on scrolling to stinger
+  useEffect(() => {
+    if (intro) return;
+    
+    // Check if feedback already dismissed or submitted in this session
+    const feedbackDismissed = sessionStorage.getItem("feedbackDismissed");
+    if (feedbackDismissed) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const [entry] = entries;
+        if (entry.isIntersecting) {
+          const tipsSubmitted = sessionStorage.getItem("tipsSubmitted");
+          if (tipsSubmitted !== "true") {
+            setShowFeedbackModal(true);
+          }
+          observer.disconnect();
+        }
+      },
+      { threshold: 0.1 } // Trigger even when just 10% of stinger is visible
+    );
+
+    if (stingerRef.current) {
+      observer.observe(stingerRef.current);
+    }
+
+  }, [intro]);
+
+  // Clapperboard trigger on scrolling to paper trail
+  useEffect(() => {
+    if (intro) return;
+
+    const tipsDismissed = sessionStorage.getItem("tipsDismissed");
+    if (tipsDismissed) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const [entry] = entries;
+        if (entry.isIntersecting) {
+          setShowTipsModal(true);
+          observer.disconnect();
+        }
+      },
+      { threshold: 0.1 }
+    );
+
+    if (paperTrailRef.current) {
+      observer.observe(paperTrailRef.current);
+    }
+
+    return () => observer.disconnect();
+  }, [intro]);
+
+  const handleCloseFeedbackModal = () => {
+    setShowFeedbackModal(false);
+    sessionStorage.setItem("feedbackDismissed", "true");
+  };
+
+  const handleLinkedInConnect = () => {
+    const inviteNote = "Hi Darsh, I saw your portfolio at darshtank.in. Let's connect!";
+    navigator.clipboard.writeText(inviteNote).then(
+      () => {
+        setLinkedinStatus("Note copied! Opening LinkedIn...");
+        sessionStorage.setItem("linkedinConnected", "true");
+        setLinkedinConnected(true);
+        setTimeout(() => {
+          setLinkedinStatus("");
+          window.open(dynamicSocials.linkedin, "_blank");
+        }, 1200);
+      },
+      (err) => {
+        console.error("Failed to copy text: ", err);
+        sessionStorage.setItem("linkedinConnected", "true");
+        setLinkedinConnected(true);
+        window.open(dynamicSocials.linkedin, "_blank");
+      }
+    );
+  };
+
+  const handleCloseTipsModal = () => {
+    setShowTipsModal(false);
+    sessionStorage.setItem("tipsDismissed", "true");
+    setTipsIsProfessional(false);
+    setTipsCompanyName("");
+    setTipsFullName("");
+    setTipsContactNumber("");
+  };
+
+  const handleTipsLinkedInConnect = () => {
+    const inviteNote = "Hi Darsh, saw your portfolio (darshtank.in). Let's connect!";
+    navigator.clipboard.writeText(inviteNote).then(
+      () => {
+        setTipsLinkedinStatus("Note copied! Opening LinkedIn...");
+        sessionStorage.setItem("linkedinConnected", "true");
+        setLinkedinConnected(true);
+        setTimeout(() => {
+          setTipsLinkedinStatus("");
+          window.open(dynamicSocials.linkedin, "_blank");
+        }, 1200);
+      },
+      (err) => {
+        console.error("Failed to copy text: ", err);
+        sessionStorage.setItem("linkedinConnected", "true");
+        setLinkedinConnected(true);
+        window.open(dynamicSocials.linkedin, "_blank");
+      }
+    );
+  };
+
+  const handleTipsSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!tipsEmail || !tipsMessage) {
+      setTipsError("Please fill out all fields.");
+      return;
+    }
+    if (tipsIsProfessional && (!tipsCompanyName.trim() || !tipsFullName.trim() || !tipsContactNumber.trim())) {
+      setTipsError("Please enter your Company Name, Full Name, and Contact Number.");
+      return;
+    }
+    setTipsError("");
+    setTipsSubmitting(true);
+
+    // Trigger physical clapper hinge snap!
+    setSnapTipsHinge(true);
+
+    // Wait 350ms for clapper animation to click down
+    await new Promise((resolve) => setTimeout(resolve, 350));
+
+    try {
+      // 1. Save to Firestore tips collection
+      if (isConfigured) {
+        await addDoc(collection(db, "tips"), {
+          email: tipsEmail,
+          message: tipsMessage,
+          isProfessional: tipsIsProfessional,
+          companyName: tipsIsProfessional ? tipsCompanyName : "",
+          fullName: tipsIsProfessional ? tipsFullName : "",
+          contactNumber: tipsIsProfessional ? tipsContactNumber : "",
+          createdAt: new Date().toISOString(),
+        });
+      }
+
+      // 2. Dispatch email notification via contact API route
+      await fetch("/api/contact", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: tipsEmail,
+          subject: tipsIsProfessional 
+            ? `Placement Tip from ${tipsFullName} (${tipsCompanyName})`
+            : `Placement & Prep Tips from ${tipsEmail}`,
+          message: tipsMessage,
+          isTip: true,
+          fullName: tipsIsProfessional ? tipsFullName : "",
+          companyName: tipsIsProfessional ? tipsCompanyName : "",
+          contactNumber: tipsIsProfessional ? tipsContactNumber : "",
+        }),
+      });
+
+      sessionStorage.setItem("tipsDismissed", "true");
+      sessionStorage.setItem("tipsSubmitted", "true");
+      setShowTipsModal(false);
+      setTipsEmail("");
+      setTipsMessage("");
+      setTipsIsProfessional(false);
+      setTipsCompanyName("");
+      setTipsFullName("");
+      setTipsContactNumber("");
+      setCinematicAlert({
+        isOpen: true,
+        title: "DISPATCH SUCCESSFUL",
+        message: "Placement tips submitted successfully! Thank you, Darsh appreciates your advice.",
+      });
+    } catch (err: any) {
+      console.error(err);
+      setTipsError("Failed to submit tips. Please try again.");
+      setSnapTipsHinge(false); // Reset hinge so they can retry
+    } finally {
+      setTipsSubmitting(false);
+    }
+  };
+
+  const handleFeedbackSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!feedbackName || !feedbackEmail || !feedbackMessage || feedbackRating === 0) {
+      setFeedbackError(feedbackRating === 0 ? "Please select a rating." : "Please fill out all fields.");
+      return;
+    }
+    setFeedbackError("");
+    setFeedbackSubmitting(true);
+
+    // Trigger physical clapper hinge snap!
+    setSnapHinge(true);
+
+    // Wait 350ms for clapper animation to click down
+    await new Promise((resolve) => setTimeout(resolve, 350));
+
+    try {
+      // 1. Save to Firestore feedback collection
+      if (isConfigured) {
+        await addDoc(collection(db, "feedback"), {
+          name: feedbackName,
+          email: feedbackEmail,
+          rating: feedbackRating,
+          message: feedbackMessage,
+          createdAt: new Date().toISOString(),
+        });
+      }
+
+      // 2. Dispatch email notification via contact API route
+      await fetch("/api/contact", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: feedbackEmail,
+          subject: `Review by ${feedbackName}`,
+          message: feedbackMessage,
+          rating: feedbackRating,
+        }),
+      });
+
+      sessionStorage.setItem("feedbackDismissed", "true");
+      setShowFeedbackModal(false);
+      setFeedbackName("");
+      setFeedbackEmail("");
+      setFeedbackRating(0);
+      setFeedbackMessage("");
+      setCinematicAlert({
+        isOpen: true,
+        title: "CRITIQUE RECEIVED",
+        message: "Critique submitted successfully! Thank you for helping improve the show.",
+      });
+    } catch (err: any) {
+      console.error(err);
+      setFeedbackError("Failed to dispatch review. Please try again.");
+      setSnapHinge(false); // Reset clapper so they can try again
+    } finally {
+      setFeedbackSubmitting(false);
+    }
+  };
 
   // Visitor tracking — fires once per browser session after countdown is complete (Req 1.1–1.6, 10.1, 10.4)
   useEffect(() => {
@@ -1076,6 +1403,7 @@ export default function Index() {
 
       {/* STACK — equipment list */}
       <section
+        ref={paperTrailRef}
         id="stack"
         className="relative border-b border-rule bg-foreground text-paper overflow-hidden"
       >
@@ -1297,7 +1625,7 @@ export default function Index() {
       </section>
 
       {/* POST-CREDITS STINGER */}
-      <section className="relative bg-black py-16 text-center">
+      <section ref={stingerRef} className="relative bg-black py-16 text-center">
         <div className="mx-auto max-w-[1400px] px-6 sm:px-10 md:px-16" data-reveal>
           <p className="font-mono text-[10px] uppercase tracking-[0.4em] text-foreground/30">
             (stay seated — one more scene)
@@ -1316,6 +1644,433 @@ export default function Index() {
           </p>
         </div>
       </section>
+
+      {/* CLAPPERBOARD RATING MODAL */}
+      {showFeedbackModal && (
+        <div className="fixed inset-0 z-[80] overflow-y-auto cinematic-scroll bg-black/85 backdrop-blur-sm p-4 animate-fade-in font-mono text-xs flex justify-center items-start">
+          <div className="relative flex flex-col items-center select-none pt-14 pb-8 my-auto">
+            {/* Close button */}
+            <button 
+              onClick={handleCloseFeedbackModal}
+              className="absolute top-16 right-0 bg-[#0c0c0c] border border-rule w-7 h-7 flex items-center justify-center text-foreground/50 hover:text-ember rounded-full transition-colors z-20 text-sm cursor-pointer"
+              aria-label="Close review form"
+            >
+              ✕
+            </button>
+              
+              {/* The Clapper Hinge (Top Bar) */}
+              <div 
+                className="w-[280px] sm:w-[320px] h-[24px] rounded-t-sm"
+                style={{
+                  background: "repeating-linear-gradient(-45deg, #0c0c0c, #0c0c0c 10px, #ff7b00 10px, #ff7b00 20px)",
+                  transformOrigin: "bottom left",
+                  transform: snapHinge ? "rotate(0deg)" : "rotate(-12deg)",
+                  transition: "transform 0.2s cubic-bezier(0.25, 1, 0.5, 1)",
+                  marginBottom: "4px"
+                }}
+              />
+
+              {/* The Clapper Board (Base) */}
+              <div className="w-[280px] sm:w-[320px] bg-[#0c0c0c] border border-rule rounded shadow-lg overflow-hidden">
+                {/* Top border of slate base (matching repeating stripes) */}
+                <div 
+                  className="w-full h-[16px] border-b border-rule"
+                  style={{
+                    background: "repeating-linear-gradient(-45deg, #0c0c0c, #0c0c0c 10px, #ff7b00 10px, #ff7b00 20px)"
+                  }}
+                />
+
+                {/* Slate Content Fields */}
+                <div className="p-4 space-y-4">
+                  
+                  {/* Header Readout info */}
+                  <div className="grid grid-cols-2 border-b border-rule pb-2 gap-2 text-[10px] text-foreground/50">
+                    <div>
+                      <span className="text-ember">PROD:</span> thedarshtank
+                    </div>
+                    <div className="text-right">
+                      <span className="text-ember">ROLL:</span> IT-DEV
+                    </div>
+                    <div>
+                      <span className="text-ember">SCENE:</span> 1.0 (Review)
+                    </div>
+                    <div className="text-right">
+                      <span className="text-ember">DATE:</span> {new Date().toLocaleDateString(undefined, { month: '2-digit', day: '2-digit', year: 'numeric' })}
+                    </div>
+                  </div>
+
+                    <form onSubmit={handleFeedbackSubmit} className="space-y-3">
+                      {/* Reviewer Name */}
+                      <div className="space-y-1">
+                        <label className="text-[9px] uppercase text-foreground/40 block">Full Name</label>
+                        <input
+                          type="text"
+                          required
+                          value={feedbackName}
+                          onChange={(e) => setFeedbackName(e.target.value)}
+                          placeholder="e.g. Lead Developer / Reviewer"
+                          className="w-full bg-[#111] border border-rule focus:border-ember outline-none px-2 py-1.5 rounded text-[11px] text-foreground font-mono"
+                        />
+                      </div>
+
+                      {/* Email Address */}
+                      <div className="space-y-1">
+                        <label className="text-[9px] uppercase text-foreground/40 block">Email Address</label>
+                        <input
+                          type="email"
+                          required
+                          value={feedbackEmail}
+                          onChange={(e) => setFeedbackEmail(e.target.value)}
+                          placeholder="reviewer@company.com"
+                          className="w-full bg-[#111] border border-rule focus:border-ember outline-none px-2 py-1.5 rounded text-[11px] text-foreground font-mono"
+                        />
+                      </div>
+
+                      {/* Rating Star Selection */}
+                      <div className="space-y-1">
+                        <label className="text-[9px] uppercase text-foreground/40 block">Code Quality & Design Rating</label>
+                        <div className="flex items-center gap-1.5 py-0.5">
+                          {[1, 2, 3, 4, 5].map((star) => (
+                            <button
+                              key={star}
+                              type="button"
+                              onClick={() => setFeedbackRating(star)}
+                              className={`text-base transition-all ${
+                                star <= feedbackRating 
+                                  ? "text-ember drop-shadow-[0_0_8px_rgba(255,123,0,0.5)] scale-110" 
+                                  : "text-foreground/20 hover:text-foreground/40"
+                              }`}
+                            >
+                              ★
+                            </button>
+                          ))}
+                          <span className="text-[9px] text-foreground/50 ml-2 font-mono">
+                            {feedbackRating > 0 ? `(${feedbackRating}/5)` : "(Required)"}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Critique / Comments logline */}
+                      <div className="space-y-1">
+                        <label className="text-[9px] uppercase text-foreground/40 block">Critique & Suggestions</label>
+                        <textarea
+                          required
+                          rows={3}
+                          value={feedbackMessage}
+                          onChange={(e) => setFeedbackMessage(e.target.value)}
+                          placeholder="Bug reports, technical reviews, or suggestions..."
+                          className="w-full bg-[#111] border border-rule focus:border-ember outline-none px-2 py-1.5 rounded text-[11px] text-foreground resize-none font-mono"
+                        />
+                      </div>
+
+                      {feedbackError && (
+                        <p className="text-red-500 text-[10px] text-center font-mono">{feedbackError}</p>
+                      )}
+
+                      {/* Submit clapper trigger */}
+                      <button
+                        type="submit"
+                        disabled={feedbackSubmitting}
+                        className="w-full py-2 bg-ember text-black hover:bg-[#ff8f22] font-mono text-[9px] font-bold uppercase tracking-widest transition-colors flex items-center justify-center gap-2 rounded disabled:opacity-50 disabled:cursor-not-allowed mt-2"
+                      >
+                        🎬 {feedbackSubmitting ? "Snapping..." : "SNAP & DISPATCH REVIEW"}
+                      </button>
+
+                      {!linkedinConnected && (
+                        <button
+                          type="button"
+                          onClick={handleLinkedInConnect}
+                          className="w-full py-2 bg-[#0077b5] text-white hover:bg-[#006297] font-mono text-[9px] font-bold uppercase tracking-widest transition-colors flex items-center justify-center gap-2 rounded mt-2 cursor-pointer shadow-[0_2px_10px_rgba(0,119,181,0.25)]"
+                        >
+                          💼 Connect on LinkedIn
+                        </button>
+                      )}
+
+                      {linkedinStatus && (
+                        <p className="text-amber-500 text-[10px] text-center font-mono mt-2 animate-pulse">
+                          &gt; {linkedinStatus}
+                        </p>
+                      )}
+                    </form>
+                </div>
+              </div>
+            </div>
+          </div>
+      )}
+
+      {/* PLACEMENT TIPS MODAL */}
+      {showTipsModal && (
+        <div className="fixed inset-0 z-[80] overflow-y-auto cinematic-scroll bg-black/85 backdrop-blur-sm p-4 animate-fade-in font-mono text-xs flex justify-center items-start">
+          <div className="relative flex flex-col items-center select-none pt-14 pb-8 my-auto">
+            {/* Close button */}
+            <button 
+              onClick={handleCloseTipsModal}
+              className="absolute top-16 right-0 bg-[#0c0c0c] border border-rule w-7 h-7 flex items-center justify-center text-foreground/50 hover:text-ember rounded-full transition-colors z-20 text-sm cursor-pointer"
+              aria-label="Close tips form"
+            >
+              ✕
+            </button>
+              
+              {/* The Clapper Hinge (Top Bar) */}
+              <div 
+                className="w-[280px] sm:w-[320px] h-[24px] rounded-t-sm"
+                style={{
+                  background: "repeating-linear-gradient(-45deg, #0c0c0c, #0c0c0c 10px, #ff7b00 10px, #ff7b00 20px)",
+                  transformOrigin: "bottom left",
+                  transform: snapTipsHinge ? "rotate(0deg)" : "rotate(-12deg)",
+                  transition: "transform 0.2s cubic-bezier(0.25, 1, 0.5, 1)",
+                  marginBottom: "4px"
+                }}
+              />
+
+              {/* The Clapper Board (Base) */}
+              <div className="w-[280px] sm:w-[320px] bg-[#0c0c0c] border border-rule rounded shadow-lg overflow-hidden">
+                {/* Top border of slate base (matching repeating stripes) */}
+                <div 
+                  className="w-full h-[16px] border-b border-rule"
+                  style={{
+                    background: "repeating-linear-gradient(-45deg, #0c0c0c, #0c0c0c 10px, #ff7b00 10px, #ff7b00 20px)"
+                  }}
+                />
+
+                {/* Slate Content Fields */}
+                <div className="p-4 space-y-4">
+                  
+                  {/* Header Readout info */}
+                  <div className="grid grid-cols-2 border-b border-rule pb-2 gap-2 text-[10px] text-foreground/50">
+                    <div>
+                      <span className="text-ember">PROD:</span> Darsh Tank
+                    </div>
+                    <div className="text-right">
+                      <span className="text-ember">ROLE:</span> Student / Dev
+                    </div>
+                    <div>
+                      <span className="text-ember">SCENE:</span> Placement Prep
+                    </div>
+                    <div className="text-right">
+                      <span className="text-ember">DATE:</span> {new Date().toLocaleDateString(undefined, { month: '2-digit', day: '2-digit', year: 'numeric' })}
+                    </div>
+                  </div>
+
+                  <div className="text-[10px] text-foreground/70 leading-relaxed border-b border-rule/35 pb-2 font-mono">
+                    <p className="text-left border-l border-ember pl-2">
+                      Hi, I'm Darsh Tank! I'm preparing for my college placements & developer interviews. Share your best tips/resources, and let's connect on LinkedIn!
+                    </p>
+                  </div>
+
+                  <form onSubmit={handleTipsSubmit} className="space-y-3">
+                    {/* Email Address */}
+                    <div className="space-y-1">
+                      <label className="text-[9px] uppercase text-foreground/40 block">Email Address</label>
+                      <input
+                        type="email"
+                        required
+                        value={tipsEmail}
+                        onChange={(e) => setTipsEmail(e.target.value)}
+                        placeholder="reviewer@company.com"
+                        className="w-full bg-[#111] border border-rule focus:border-ember outline-none px-2 py-1.5 rounded text-[11px] text-foreground font-mono"
+                      />
+                    </div>
+
+                    {/* Professional Toggle */}
+                    <div className="flex items-center gap-2 py-1 select-none">
+                      <input
+                        type="checkbox"
+                        id="tipsIsProfessional"
+                        checked={tipsIsProfessional}
+                        onChange={(e) => {
+                          setTipsIsProfessional(e.target.checked);
+                          if (!e.target.checked) {
+                            setTipsCompanyName("");
+                            setTipsFullName("");
+                            setTipsContactNumber("");
+                          }
+                        }}
+                        className="rounded border-rule bg-black text-ember focus:ring-0 focus:ring-offset-0 h-3.5 w-3.5 cursor-pointer accent-[#ff7b00]"
+                      />
+                      <label htmlFor="tipsIsProfessional" className="text-[9px] uppercase text-foreground/60 cursor-pointer font-mono font-semibold">
+                        I am a company professional
+                      </label>
+                    </div>
+
+                    {/* Company Details (only shown if isProfessional is true) */}
+                    {tipsIsProfessional && (
+                      <div className="space-y-3 animate-fade-in border-l-2 border-ember/30 pl-2 py-1 my-1">
+                        {/* Full Name */}
+                        <div className="space-y-1">
+                          <label className="text-[9px] uppercase text-foreground/40 block">Full Name</label>
+                          <input
+                            type="text"
+                            required
+                            value={tipsFullName}
+                            onChange={(e) => setTipsFullName(e.target.value)}
+                            placeholder="Your Name"
+                            className="w-full bg-[#111] border border-rule focus:border-ember outline-none px-2 py-1.5 rounded text-[11px] text-foreground font-mono"
+                          />
+                        </div>
+
+                        {/* Company Name */}
+                        <div className="space-y-1">
+                          <label className="text-[9px] uppercase text-foreground/40 block">Company Name</label>
+                          <input
+                            type="text"
+                            required
+                            value={tipsCompanyName}
+                            onChange={(e) => setTipsCompanyName(e.target.value)}
+                            placeholder="e.g. Google, Netflix, Indie Prod"
+                            className="w-full bg-[#111] border border-rule focus:border-ember outline-none px-2 py-1.5 rounded text-[11px] text-foreground font-mono"
+                          />
+                        </div>
+
+                        {/* Contact Number */}
+                        <div className="space-y-1">
+                          <label className="text-[9px] uppercase text-foreground/40 block">Contact Number</label>
+                          <input
+                            type="tel"
+                            required
+                            value={tipsContactNumber}
+                            onChange={(e) => setTipsContactNumber(e.target.value)}
+                            placeholder="+91 1234567890"
+                            className="w-full bg-[#111] border border-rule focus:border-ember outline-none px-2 py-1.5 rounded text-[11px] text-foreground font-mono"
+                          />
+                        </div>
+
+                        <p className="text-[8.5px] text-amber-500/90 font-mono leading-relaxed mt-1">
+                          * As an industry expert, your Contact details and LinkedIn connection is highly valued. Please click the button below to connect with me!
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Message Box */}
+                    <div className="space-y-1">
+                      <label className="text-[9px] uppercase text-foreground/40 block">Preparation Tips & Advice</label>
+                      <textarea
+                        required
+                        rows={3}
+                        value={tipsMessage}
+                        onChange={(e) => setTipsMessage(e.target.value)}
+                        placeholder="DSA tips, system design, mock interview advice..."
+                        className="w-full bg-[#111] border border-rule focus:border-ember outline-none px-2 py-1.5 rounded text-[11px] text-foreground resize-none font-mono"
+                      />
+                    </div>
+
+                    {tipsError && (
+                      <p className="text-red-500 text-[10px] text-center font-mono">{tipsError}</p>
+                    )}
+
+                    {/* Submit clapper trigger */}
+                    <button
+                      type="submit"
+                      disabled={tipsSubmitting}
+                      className="w-full py-2 bg-ember text-black hover:bg-[#ff8f22] font-mono text-[9px] font-bold uppercase tracking-widest transition-colors flex items-center justify-center gap-2 rounded disabled:opacity-50 disabled:cursor-not-allowed mt-2"
+                    >
+                      🎬 {tipsSubmitting ? "Snapping..." : "SNAP & DISPATCH TIPS"}
+                    </button>
+
+                    {!linkedinConnected && (
+                      <button
+                        type="button"
+                        onClick={handleTipsLinkedInConnect}
+                        className="w-full py-2 bg-[#0077b5] text-white hover:bg-[#006297] font-mono text-[9px] font-bold uppercase tracking-widest transition-colors flex items-center justify-center gap-2 rounded mt-2 cursor-pointer shadow-[0_2px_10px_rgba(0,119,181,0.25)]"
+                      >
+                        💼 Connect on LinkedIn
+                      </button>
+                    )}
+
+                    {tipsLinkedinStatus && (
+                      <p className="text-amber-500 text-[10px] text-center font-mono mt-2 animate-pulse">
+                        &gt; {tipsLinkedinStatus}
+                      </p>
+                    )}
+                  </form>
+                </div>
+              </div>
+            </div>
+          </div>
+      )}
+
+      {/* Cinematic Custom Alert Dialog */}
+      {cinematicAlert.isOpen && (
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-md z-[200] flex items-center justify-center p-4 animate-fade-in">
+          <div className="border border-ember/45 bg-[#0a0a0a] max-w-sm w-full relative overflow-hidden shadow-[0_0_50px_rgba(255,123,0,0.2)] rounded text-center">
+            
+            {/* Clapperboard Pattern Strip */}
+            <div 
+              className="w-full h-4 border-b border-ember/35"
+              style={{
+                background: "repeating-linear-gradient(-45deg, #000, #000 8px, #ff7b00 8px, #ff7b00 16px)"
+              }}
+            />
+            
+            <div className="p-6 space-y-4">
+              {/* Star icon */}
+              <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-ember/10 border border-ember/30 text-ember animate-pulse">
+                <span className="text-xl">✦</span>
+              </div>
+              
+              {/* Title */}
+              <h3 className="font-display text-lg tracking-[0.15em] text-ember uppercase">
+                {cinematicAlert.title}
+              </h3>
+              
+              {/* Message */}
+              <p className="font-mono text-[10.5px] leading-relaxed text-foreground/80 px-2">
+                {cinematicAlert.message}
+              </p>
+              
+              {/* Close / LinkedIn Suggestion */}
+              {!linkedinConnected ? (
+                <div className="space-y-3 pt-2 border-t border-rule/35">
+                  <p className="font-mono text-[9px] uppercase tracking-wider text-amber-500/90 leading-normal px-2">
+                    Let's stay connected! Would you like to connect on LinkedIn?
+                  </p>
+                  
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const isTipsAlert = cinematicAlert.title.includes("DISPATCH");
+                      const inviteNote = isTipsAlert 
+                        ? "Hi Darsh, saw your portfolio (darshtank.in). Let's connect!"
+                        : "Hi Darsh, I saw your portfolio at darshtank.in. Let's connect!";
+                      
+                      navigator.clipboard.writeText(inviteNote).then(() => {
+                        sessionStorage.setItem("linkedinConnected", "true");
+                        setLinkedinConnected(true);
+                        window.open(dynamicSocials.linkedin, "_blank");
+                        setCinematicAlert({ ...cinematicAlert, isOpen: false });
+                      }, () => {
+                        sessionStorage.setItem("linkedinConnected", "true");
+                        setLinkedinConnected(true);
+                        window.open(dynamicSocials.linkedin, "_blank");
+                        setCinematicAlert({ ...cinematicAlert, isOpen: false });
+                      });
+                    }}
+                    className="w-full py-2 bg-[#0077b5] text-white hover:bg-[#006297] font-mono text-[9px] font-bold uppercase tracking-widest transition-colors flex items-center justify-center gap-2 rounded cursor-pointer shadow-[0_2px_10px_rgba(0,119,181,0.25)] animate-pulse"
+                  >
+                    💼 Connect on LinkedIn
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setCinematicAlert({ ...cinematicAlert, isOpen: false })}
+                    className="text-[9px] font-mono text-foreground/45 hover:text-foreground/80 transition-colors uppercase tracking-widest block mx-auto pt-1 cursor-pointer"
+                  >
+                    No thanks, just close
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setCinematicAlert({ ...cinematicAlert, isOpen: false })}
+                  className="w-full py-2 bg-ember text-black hover:bg-[#ff8f22] font-mono text-[9px] font-bold uppercase tracking-[0.2em] transition-all duration-200 rounded cursor-pointer shadow-[0_4px_12px_rgba(255,123,0,0.2)]"
+                >
+                  CONTINUE SHOWTIME
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

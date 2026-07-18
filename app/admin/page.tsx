@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   signInWithPopup,
   signOut,
@@ -14,6 +14,7 @@ import {
   getDoc,
   setDoc,
   deleteDoc,
+  updateDoc,
   onSnapshot,
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
@@ -33,9 +34,14 @@ import {
   FileText,
   Eye,
   EyeOff,
+  ShieldBan,
+  ShieldCheck,
+  X,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 
-import { type VisitorRecord, computeMetrics, parseBrowserName, formatRelativeTime } from "../../lib/analytics";
+import { type VisitorRecord, computeMetrics, parseBrowserName, formatRelativeTime, sanitizeIp } from "../../lib/analytics";
 const Github = (props: React.SVGProps<SVGSVGElement>) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
@@ -73,7 +79,7 @@ const Linkedin = (props: React.SVGProps<SVGSVGElement>) => (
   </svg>
 );
 
-const ALLOWED_EMAIL = "darshtank05@gmail.com";
+const ALLOWED_EMAIL = process.env.NEXT_PUBLIC_ADMIN_EMAIL || "";
 
 interface ProjectData {
   id?: string;
@@ -115,7 +121,7 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState<
-    "projects" | "experiences" | "socials" | "resume" | "starring" | "backstory" | "skills" | "credits" | "analytics"
+    "projects" | "experiences" | "socials" | "resume" | "starring" | "backstory" | "skills" | "credits" | "analytics" | "graphs" | "feedback" | "tips"
   >("projects");
 
   // Analytics states
@@ -126,7 +132,11 @@ export default function AdminPage() {
   const [visitorSortField, setVisitorSortField] = useState<string>("lastSeen");
   const [visitorSortAsc, setVisitorSortAsc] = useState(false);
   const [visitorPage, setVisitorPage] = useState(1);
+  const [visitorPageSize, setVisitorPageSize] = useState<number>(10);
+  const [chartFilter, setChartFilter] = useState<"day" | "month" | "year">("day");
   const [selectedVisitors, setSelectedVisitors] = useState<string[]>([]);
+  const [countryPage, setCountryPage] = useState(1);
+  const [browserPage, setBrowserPage] = useState(1);
 
   // Dynamic content states
   const [projectsList, setProjectsList] = useState<ProjectData[]>([]);
@@ -155,6 +165,20 @@ export default function AdminPage() {
     duration: ""
   });
   const [creditsList, setCreditsList] = useState<any[]>([]);
+  const [feedbackList, setFeedbackList] = useState<any[]>([]);
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
+  const [feedbackPage, setFeedbackPage] = useState(1);
+  const [feedbackPageSize, setFeedbackPageSize] = useState<number>(10);
+  const [feedbackFilterRating, setFeedbackFilterRating] = useState<string>("all");
+  const [expandedFeedbackIds, setExpandedFeedbackIds] = useState<string[]>([]);
+  
+  // Placement Tips States
+  const [tipsList, setTipsList] = useState<any[]>([]);
+  const [tipsLoading, setTipsLoading] = useState(false);
+  const [tipsPage, setTipsPage] = useState(1);
+  const [tipsPageSize, setTipsPageSize] = useState<number>(10);
+  const [expandedTipsIds, setExpandedTipsIds] = useState<string[]>([]);
+
   const [skillsObj, setSkillsObj] = useState<any>({
     Languages: [],
     Frameworks: [],
@@ -166,6 +190,31 @@ export default function AdminPage() {
   const [editingProject, setEditingProject] = useState<Partial<ProjectData> | null>(null);
   const [editingExperience, setEditingExperience] = useState<Partial<ExperienceData> | null>(null);
   const [statusMessage, setStatusMessage] = useState({ text: "", type: "" });
+
+  // Confirmation modal state
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void | Promise<void>;
+  }>({
+    isOpen: false,
+    title: "",
+    message: "",
+    onConfirm: () => {},
+  });
+
+  const triggerConfirm = (title: string, message: string, onConfirm: () => void | Promise<void>) => {
+    setConfirmModal({
+      isOpen: true,
+      title,
+      message,
+      onConfirm: async () => {
+        setConfirmModal((prev) => ({ ...prev, isOpen: false }));
+        await onConfirm();
+      },
+    });
+  };
 
   useEffect(() => {
     if (!isConfigured) {
@@ -197,7 +246,7 @@ export default function AdminPage() {
   useEffect(() => {
     const savedTab = localStorage.getItem("adminActiveTab");
     if (savedTab && [
-      "projects", "experiences", "socials", "resume", "starring", "backstory", "skills", "credits", "analytics"
+      "projects", "experiences", "socials", "resume", "starring", "backstory", "skills", "credits", "analytics", "graphs"
     ].includes(savedTab)) {
       setActiveTab(savedTab as any);
     }
@@ -236,6 +285,106 @@ export default function AdminPage() {
 
     return () => unsubscribe();
   }, [user]);
+
+  // Real-time feedback subscription (onSnapshot)
+  useEffect(() => {
+    if (!isConfigured || !user) return;
+
+    setFeedbackLoading(true);
+
+    const unsubscribe = onSnapshot(
+      collection(db, "feedback"),
+      (snap) => {
+        const records = snap.docs.map((d) => ({
+          id: d.id,
+          ...d.data(),
+        })) as any[];
+        // Sort by createdAt descending
+        records.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+        setFeedbackList(records);
+        setFeedbackLoading(false);
+      },
+      (err: any) => {
+        console.error("Real-time feedback subscription error:", err);
+        setFeedbackLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // Real-time placement tips subscription (onSnapshot)
+  useEffect(() => {
+    if (!isConfigured || !user) return;
+
+    setTipsLoading(true);
+
+    const unsubscribe = onSnapshot(
+      collection(db, "tips"),
+      (snap) => {
+        const records = snap.docs.map((d) => ({
+          id: d.id,
+          ...d.data(),
+        })) as any[];
+        // Sort by createdAt descending
+        records.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+        setTipsList(records);
+        setTipsLoading(false);
+      },
+      (err: any) => {
+        console.error("Real-time tips subscription error:", err);
+        setTipsLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [user]);
+
+  const handleDeleteFeedback = (id: string) => {
+    triggerConfirm(
+      "DELETE AUDIENCE SCORE",
+      "Are you sure you want to delete this audience rating and critique log? This action is permanent and cannot be undone.",
+      async () => {
+        try {
+          showStatus("Deleting feedback...");
+          await deleteDoc(doc(db, "feedback", id));
+          showStatus("Feedback deleted successfully!");
+        } catch (err: any) {
+          console.error("Error deleting feedback:", err);
+          showStatus("Failed to delete feedback.", "error");
+        }
+      }
+    );
+  };
+
+  const toggleExpandFeedback = (id: string) => {
+    setExpandedFeedbackIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const handleDeleteTip = (id: string) => {
+    triggerConfirm(
+      "DELETE PLACEMENT TIP",
+      "Are you sure you want to delete this placement tip record? This action is permanent and cannot be undone.",
+      async () => {
+        try {
+          showStatus("Deleting placement tip...");
+          await deleteDoc(doc(db, "tips", id));
+          showStatus("Placement tip deleted successfully!");
+        } catch (err: any) {
+          console.error("Error deleting tip:", err);
+          showStatus("Failed to delete tip.", "error");
+        }
+      }
+    );
+  };
+
+  const toggleExpandTip = (id: string) => {
+    setExpandedTipsIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
 
   const showStatus = (text: string, type: "success" | "error" = "success") => {
     setStatusMessage({ text, type });
@@ -335,38 +484,67 @@ export default function AdminPage() {
   };
 
   const deleteVisitor = async (ipAddress: string) => {
-    if (!isConfigured || !window.confirm(`Are you sure you want to delete visitor record for IP: ${ipAddress}?`)) return;
-    try {
-      const docId = ipAddress.replace(/[.:]/g, "_");
-      await deleteDoc(doc(db, "visitors", docId));
-      showStatus(`Deleted record for ${ipAddress}.`);
-      setSelectedVisitors(prev => prev.filter(ip => ip !== ipAddress));
-      await fetchAnalytics();
-    } catch (err: any) {
-      console.error("Failed to delete visitor document:", err);
-      showStatus("Failed to delete record.", "error");
-    }
+    if (!isConfigured) return;
+    triggerConfirm(
+      "Delete Visitor Record",
+      `Are you sure you want to delete visitor record for IP: ${ipAddress}?`,
+      async () => {
+        try {
+          const docId = ipAddress.replace(/[.:]/g, "_");
+          await deleteDoc(doc(db, "visitors", docId));
+          showStatus(`Deleted record for ${ipAddress}.`);
+          setSelectedVisitors(prev => prev.filter(ip => ip !== ipAddress));
+          await fetchAnalytics();
+        } catch (err: any) {
+          console.error("Failed to delete visitor document:", err);
+          showStatus("Failed to delete record.", "error");
+        }
+      }
+    );
   };
 
   const deleteSelectedVisitors = async () => {
     if (!isConfigured || selectedVisitors.length === 0) return;
-    const confirmMessage = `Are you sure you want to delete ${selectedVisitors.length} selected visitor record(s)?`;
-    if (!window.confirm(confirmMessage)) return;
+    triggerConfirm(
+      "Delete Selected Records",
+      `Are you sure you want to delete ${selectedVisitors.length} selected visitor record(s)?`,
+      async () => {
+        try {
+          await Promise.all(
+            selectedVisitors.map((ip) => {
+              const docId = ip.replace(/[.:]/g, "_");
+              return deleteDoc(doc(db, "visitors", docId));
+            })
+          );
+          showStatus(`Successfully deleted ${selectedVisitors.length} record(s).`);
+          setSelectedVisitors([]);
+          await fetchAnalytics();
+        } catch (err: any) {
+          console.error("Failed to delete selected visitors:", err);
+          showStatus("Failed to delete some records.", "error");
+        }
+      }
+    );
+  };
 
-    try {
-      await Promise.all(
-        selectedVisitors.map((ip) => {
-          const docId = ip.replace(/[.:]/g, "_");
-          return deleteDoc(doc(db, "visitors", docId));
-        })
-      );
-      showStatus(`Successfully deleted ${selectedVisitors.length} record(s).`);
-      setSelectedVisitors([]);
-      await fetchAnalytics();
-    } catch (err: any) {
-      console.error("Failed to delete selected visitors:", err);
-      showStatus("Failed to delete some records.", "error");
-    }
+  const toggleBlockVisitor = async (ip: string, currentlyBlocked: boolean) => {
+    if (!isConfigured) return;
+    const nextBlocked = !currentlyBlocked;
+    const action = nextBlocked ? "block" : "unblock";
+    triggerConfirm(
+      `${nextBlocked ? "Block" : "Unblock"} Connection`,
+      `Are you sure you want to ${action} IP: ${ip}?`,
+      async () => {
+        try {
+          const docId = sanitizeIp(ip);
+          await updateDoc(doc(db, "visitors", docId), { blocked: nextBlocked });
+          showStatus(`IP ${ip} has been ${nextBlocked ? "blocked" : "unblocked"}.`);
+        } catch (err: any) {
+          console.error(`Failed to ${action} visitor:`, err);
+          showStatus(`Failed to ${action} visitor.`, "error");
+        }
+      }
+    );
   };
 
   const handleSaveResumeUrl = async (e: React.FormEvent) => {
@@ -426,37 +604,42 @@ export default function AdminPage() {
   };
 
   const handleDeleteResume = async () => {
-    if (!confirm("Are you sure you want to delete the current resume? This will clear it from the database.")) return;
-    try {
-      showStatus("Deleting resume...");
-      
-      if (user) {
+    triggerConfirm(
+      "Delete Resume",
+      "Are you sure you want to delete the current resume? This will clear it from the database.",
+      async () => {
         try {
-          await fetch("/api/upload-resume", {
-            method: "DELETE",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ email: user.email || "" }),
+          showStatus("Deleting resume...");
+          
+          if (user) {
+            try {
+              await fetch("/api/upload-resume", {
+                method: "DELETE",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ email: user.email || "" }),
+              });
+            } catch (err) {
+              console.warn("Local file deletion failed:", err);
+            }
+          }
+
+          // Delete from firestore socials doc
+          await setDoc(doc(db, "globals", "socials"), {
+            ...socials,
+            resumeUrl: "",
+            resumeName: "",
           });
-        } catch (err) {
-          console.warn("Local file deletion failed:", err);
+          
+          setResumeUrl("");
+          setResumeName("");
+          setResumeInputUrl("");
+          showStatus("Resume deleted successfully!");
+        } catch (err: any) {
+          console.error(err);
+          showStatus("Failed to delete resume.", "error");
         }
       }
-
-      // Delete from firestore socials doc
-      await setDoc(doc(db, "globals", "socials"), {
-        ...socials,
-        resumeUrl: "",
-        resumeName: "",
-      });
-      
-      setResumeUrl("");
-      setResumeName("");
-      setResumeInputUrl("");
-      showStatus("Resume deleted successfully!");
-    } catch (err: any) {
-      console.error(err);
-      showStatus("Failed to delete resume.", "error");
-    }
+    );
   };
 
   const handleSaveStarring = async (e: React.FormEvent) => {
@@ -573,15 +756,20 @@ export default function AdminPage() {
   };
 
   const deleteProject = async (id: string, name: string) => {
-    if (!confirm(`Are you sure you want to delete project: ${name}?`)) return;
-    try {
-      await deleteDoc(doc(db, "projects", id));
-      showStatus(`Deleted project: ${name}`);
-      fetchAdminData();
-    } catch (err) {
-      console.error(err);
-      showStatus("Failed to delete project.", "error");
-    }
+    triggerConfirm(
+      "Delete Project",
+      `Are you sure you want to delete project: ${name}?`,
+      async () => {
+        try {
+          await deleteDoc(doc(db, "projects", id));
+          showStatus(`Deleted project: ${name}`);
+          fetchAdminData();
+        } catch (err) {
+          console.error(err);
+          showStatus("Failed to delete project.", "error");
+        }
+      }
+    );
   };
 
   // --- Experience actions ---
@@ -613,15 +801,20 @@ export default function AdminPage() {
   };
 
   const deleteExperience = async (id: string, co: string) => {
-    if (!confirm(`Are you sure you want to delete experience at: ${co}?`)) return;
-    try {
-      await deleteDoc(doc(db, "experiences", id));
-      showStatus(`Deleted experience: ${co}`);
-      fetchAdminData();
-    } catch (err) {
-      console.error(err);
-      showStatus("Failed to delete experience.", "error");
-    }
+    triggerConfirm(
+      "Delete Experience",
+      `Are you sure you want to delete experience at: ${co}?`,
+      async () => {
+        try {
+          await deleteDoc(doc(db, "experiences", id));
+          showStatus(`Deleted experience: ${co}`);
+          fetchAdminData();
+        } catch (err) {
+          console.error(err);
+          showStatus("Failed to delete experience.", "error");
+        }
+      }
+    );
   };
 
   const toggleProjectVisibility = async (p: ProjectData) => {
@@ -691,7 +884,7 @@ export default function AdminPage() {
   // --- LOGIN INTERFACE ---
   if (!user) {
     return (
-      <main className="min-h-screen bg-black text-foreground font-mono flex flex-col items-center justify-center p-6 relative overflow-hidden">
+      <main className="min-h-screen bg-black text-foreground font-mono flex flex-col items-center justify-center p-6 pt-20 pb-20 relative overflow-hidden">
         <div className="absolute inset-0 scan opacity-20 pointer-events-none" />
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,123,0,0.07),transparent_70%)] pointer-events-none" />
         
@@ -803,12 +996,28 @@ export default function AdminPage() {
     });
 
   // Pagination helper calculations
-  const visitorPageSize = 10;
+  const nowMs = Date.now();
   const totalItems = sortedAndFilteredVisitors.length;
   const totalPages = Math.max(Math.ceil(totalItems / visitorPageSize), 1);
   const currentPage = Math.min(visitorPage, totalPages);
   const startIndex = (currentPage - 1) * visitorPageSize;
   const paginatedVisitors = sortedAndFilteredVisitors.slice(startIndex, startIndex + visitorPageSize);
+
+  // Country breakdown pagination
+  const countryPageSize = 5;
+  const totalCountryItems = metrics.countryBreakdown.length;
+  const totalCountryPages = Math.max(Math.ceil(totalCountryItems / countryPageSize), 1);
+  const currentCountryPage = Math.min(countryPage, totalCountryPages);
+  const countryStartIndex = (currentCountryPage - 1) * countryPageSize;
+  const paginatedCountries = metrics.countryBreakdown.slice(countryStartIndex, countryStartIndex + countryPageSize);
+
+  // Browser breakdown pagination
+  const browserPageSize = 5;
+  const totalBrowserItems = metrics.browserBreakdown.length;
+  const totalBrowserPages = Math.max(Math.ceil(totalBrowserItems / browserPageSize), 1);
+  const currentBrowserPage = Math.min(browserPage, totalBrowserPages);
+  const browserStartIndex = (currentBrowserPage - 1) * browserPageSize;
+  const paginatedBrowsers = metrics.browserBreakdown.slice(browserStartIndex, browserStartIndex + browserPageSize);
 
   const isAllOnPageSelected =
     paginatedVisitors.length > 0 &&
@@ -850,15 +1059,25 @@ export default function AdminPage() {
     return visitorSortAsc ? " ▲" : " ▼";
   };
 
+  const filterVisitorLog = (searchTerm: string) => {
+    setVisitorSearch(searchTerm);
+    setVisitorPage(1);
+    const el = document.getElementById("visitor-log-search");
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth" });
+      el.focus();
+    }
+  };
+
   // --- ADMIN PORTAL INTERFACE ---
   return (
-    <main className="min-h-screen bg-black text-foreground font-mono text-xs py-28 px-4 sm:px-8 relative overflow-x-hidden">
+    <main className="min-h-screen bg-black text-foreground font-mono text-xs relative overflow-x-hidden">
       <div className="absolute inset-0 scan opacity-15 pointer-events-none" />
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,123,0,0.04),transparent_50%)] pointer-events-none" />
       
       {/* HUD HEADER */}
-      <header className="fixed top-0 left-0 right-0 z-50 bg-black/90 border-b border-rule backdrop-blur py-4 px-4 sm:px-8">
-        <div className="max-w-[1400px] mx-auto flex items-center justify-between gap-4">
+      <header className="fixed top-0 left-0 right-0 z-[70] bg-black/90 border-b border-rule backdrop-blur py-4 px-4 sm:px-8">
+        <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
             <span className="uppercase tracking-[0.2em] font-semibold text-[9px] text-foreground/80 font-mono">
@@ -882,82 +1101,126 @@ export default function AdminPage() {
         </div>
       </header>
 
-      <div className="max-w-[1400px] mx-auto space-y-10">
-        {/* Status notification toast */}
-        {statusMessage.text && (
-          <div
-            className={`fixed bottom-8 right-8 z-50 px-6 py-4 border font-mono text-[10px] uppercase tracking-widest shadow-2xl backdrop-blur-md animate-fade-in ${
-              statusMessage.type === "error"
-                ? "border-red-500/50 bg-red-950/90 text-red-400"
-                : "border-ember/50 bg-black/90 text-ember"
-            }`}
-          >
-            <div className="flex items-center gap-2">
-              <span className={`h-1.5 w-1.5 rounded-full ${statusMessage.type === "error" ? "bg-red-400 animate-ping" : "bg-ember animate-ping"}`} />
-              <span>{statusMessage.text}</span>
-            </div>
+      {/* Status notification toast */}
+      {statusMessage.text && (
+        <div
+          className={`fixed bottom-8 right-8 z-50 px-6 py-4 border font-mono text-[10px] uppercase tracking-widest shadow-2xl backdrop-blur-md animate-fade-in ${
+            statusMessage.type === "error"
+              ? "border-red-500/50 bg-red-950/90 text-red-400"
+              : "border-ember/50 bg-black/90 text-ember"
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            <span className={`h-1.5 w-1.5 rounded-full ${statusMessage.type === "error" ? "bg-red-400 animate-ping" : "bg-ember animate-ping"}`} />
+            <span>{statusMessage.text}</span>
           </div>
-        )}
+        </div>
+      )}
 
-        {/* Cinematic Console Banner */}
-        <div className="border border-rule bg-card/25 p-6 sm:p-8 flex flex-col md:flex-row md:items-center justify-between gap-6 relative overflow-hidden backdrop-blur-sm">
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,123,0,0.06),transparent_60%)] pointer-events-none" />
-          <div className="space-y-2 relative z-10">
-            <div className="flex items-center gap-2 text-[9px] uppercase tracking-[0.3em] text-ember font-mono">
+      {/* ── SIDEBAR (desktop: fixed left, mobile: horizontal scroll at top) ── */}
+      <aside className="fixed top-[57px] left-0 bottom-0 z-[65] hidden lg:flex flex-col w-[240px] border-r border-rule bg-black/95 backdrop-blur-md">
+        {/* Sidebar brand area — always visible, never scrolls */}
+        <div className="flex-shrink-0 p-5 border-b border-rule/50 relative overflow-hidden">
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,123,0,0.08),transparent_60%)] pointer-events-none" />
+          <div className="relative z-10 space-y-3">
+            <div className="flex items-center gap-2 text-[8px] uppercase tracking-[0.3em] text-ember font-mono">
               <span className="h-1.5 w-1.5 rounded-full bg-ember animate-ping" />
-              <span>System Operations</span>
-              <span className="text-foreground/20">•</span>
-              <span>Reel Management</span>
+              <span>Reel Mgmt</span>
             </div>
-            <h2 className="font-display text-4xl sm:text-5xl tracking-wide italic">
-              Projection <span className="text-ember">Booth</span>
+            <h2 className="font-display text-2xl tracking-wide italic leading-tight">
+              Projection<br /><span className="text-ember">Booth</span>
             </h2>
-            <p className="font-mono text-[10px] uppercase tracking-wider text-foreground/45 max-w-xl">
-              Configure and modify starring sequences, backstory logs, trade tools, end credits, and showreel cards dynamically.
-            </p>
-          </div>
-          <div className="flex flex-col items-start md:items-end justify-center font-mono text-[9px] uppercase tracking-[0.2em] text-foreground/40 border-t md:border-t-0 md:border-l border-rule/50 pt-4 md:pt-0 md:pl-6 shrink-0 relative z-10">
-            <span>Booths Connected: 01</span>
-            <span className="mt-1">Region: Ahmedabad, IN</span>
-            <span className="mt-1 text-emerald-400">Server Status: Online</span>
           </div>
         </div>
 
-        {/* Tab Controls */}
-        <div className="border border-rule bg-card/30 p-2 backdrop-blur">
-          <div className="flex overflow-x-auto gap-2 scrollbar-none py-1">
-            {[
-              { id: "projects", label: "01. Filmography" },
-              { id: "experiences", label: "02. Shoots & Places" },
-              { id: "socials", label: "03. Social Channels" },
-              { id: "resume", label: "04. Resume PDF" },
-              { id: "starring", label: "05. Starring Bio" },
-              { id: "backstory", label: "06. Backstory Notes" },
-              { id: "skills", label: "07. Trade Tools" },
-              { id: "credits", label: "08. End Credits" },
-              { id: "analytics", label: "09. Analytics" },
-            ].map((tab) => {
-              const isActive = activeTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  onClick={() => {
-                    setActiveTab(tab.id as any);
-                    setEditingProject(null);
-                    setEditingExperience(null);
-                  }}
-                  className={`px-5 py-3 text-[10px] uppercase tracking-widest font-mono font-semibold transition-all duration-300 whitespace-nowrap border ${
-                    isActive
-                      ? "bg-ember text-black border-ember shadow-[0_0_15px_rgba(255,123,0,0.25)] font-bold"
-                      : "bg-black/40 text-foreground/45 border-rule/45 hover:text-foreground hover:border-rule"
-                  }`}
-                >
-                  {tab.label}
-                </button>
-              );
-            })}
-          </div>
+        {/* Sidebar nav items — scrollable */}
+        <nav className="flex-1 overflow-y-auto cinematic-scroll py-3 px-2 space-y-1">
+          {[
+            { id: "projects", label: "Filmography", no: "01" },
+            { id: "experiences", label: "Shoots & Places", no: "02" },
+            { id: "socials", label: "Social Channels", no: "03" },
+            { id: "resume", label: "Resume PDF", no: "04" },
+            { id: "starring", label: "Starring Bio", no: "05" },
+            { id: "backstory", label: "Backstory Notes", no: "06" },
+            { id: "skills", label: "Trade Tools", no: "07" },
+            { id: "credits", label: "End Credits", no: "08" },
+            { id: "analytics", label: "Analytics Log", no: "09" },
+            { id: "graphs", label: "Traffic Graphs", no: "10" },
+            { id: "feedback", label: "Audience Reviews", no: "11" },
+            { id: "tips", label: "Placement Tips", no: "12" },
+          ].map((tab) => {
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => {
+                  setActiveTab(tab.id as any);
+                  setEditingProject(null);
+                  setEditingExperience(null);
+                }}
+                className={`w-full text-left px-4 py-3 text-[10px] uppercase tracking-[0.15em] font-mono font-semibold transition-all duration-200 flex items-center gap-3 border-l-2 ${
+                  isActive
+                    ? "bg-ember/10 text-ember border-l-ember"
+                    : "text-foreground/45 border-l-transparent hover:text-foreground/80 hover:bg-white/[0.03] hover:border-l-foreground/20"
+                }`}
+              >
+                <span className={`text-[9px] font-mono tabular-nums ${isActive ? "text-ember" : "text-foreground/25"}`}>{tab.no}</span>
+                <span>{tab.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* Sidebar footer */}
+        <div className="p-4 border-t border-rule/50 font-mono text-[8px] uppercase tracking-[0.2em] text-foreground/30 space-y-1">
+          <span className="block">Booths: 01</span>
+          <span className="block">Region: Ahmedabad, IN</span>
+          <span className="block text-emerald-400/70">● Online</span>
         </div>
+      </aside>
+
+      {/* ── MOBILE TAB BAR (visible below lg) ── */}
+      <div className="lg:hidden fixed top-[57px] left-0 right-0 z-40 bg-black/95 border-b border-rule backdrop-blur-md">
+        <div className="flex overflow-x-auto gap-1 p-2 scrollbar-none">
+          {[
+            { id: "projects", label: "01. Filmography" },
+            { id: "experiences", label: "02. Shoots" },
+            { id: "socials", label: "03. Social" },
+            { id: "resume", label: "04. Resume" },
+            { id: "starring", label: "05. Starring" },
+            { id: "backstory", label: "06. Backstory" },
+            { id: "skills", label: "07. Tools" },
+            { id: "credits", label: "08. Credits" },
+            { id: "analytics", label: "09. Log" },
+            { id: "graphs", label: "10. Graphs" },
+            { id: "feedback", label: "11. Reviews" },
+            { id: "tips", label: "12. Tips" },
+          ].map((tab) => {
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => {
+                  setActiveTab(tab.id as any);
+                  setEditingProject(null);
+                  setEditingExperience(null);
+                }}
+                className={`px-3 py-2 text-[9px] uppercase tracking-wider font-mono font-semibold transition-all duration-200 whitespace-nowrap border ${
+                  isActive
+                    ? "bg-ember text-black border-ember"
+                    : "bg-black/40 text-foreground/45 border-rule/30 hover:text-foreground"
+                }`}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ── MAIN CONTENT AREA (offset for sidebar on desktop) ── */}
+      <div className="pt-[110px] lg:pt-[73px] lg:pl-[240px]">
+        <div className="max-w-[1400px] mx-auto px-4 sm:px-8 py-8 space-y-10">
 
         {/* ==================== PROJECTS TAB ==================== */}
         {activeTab === "projects" && (
@@ -1967,29 +2230,103 @@ export default function AdminPage() {
                   {/* Breakdowns */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {/* Country breakdown */}
-                    <div className="border border-rule bg-card/45 p-6 space-y-3">
-                      <p className="font-mono text-[9px] uppercase tracking-[0.3em] text-foreground/50 border-b border-rule pb-3">
-                        Top Countries
-                      </p>
-                      {metrics.countryBreakdown.map((entry) => (
-                        <div key={entry.country} className="flex items-center justify-between border-b border-rule/40 pb-2">
-                          <span className="font-mono text-xs text-foreground/80">{entry.country}</span>
-                          <span className="font-mono text-xs text-ember">{entry.count}</span>
+                    <div className="border border-rule bg-card/45 p-6 flex flex-col justify-between min-h-[270px]">
+                      <div className="space-y-3">
+                        <p className="font-mono text-[9px] uppercase tracking-[0.3em] text-foreground/50 border-b border-rule pb-3">
+                          Top Countries
+                        </p>
+                        <div className="space-y-2">
+                          {paginatedCountries.map((entry) => (
+                            <div
+                              key={entry.country}
+                              onClick={() => filterVisitorLog(entry.country)}
+                              className="flex items-center justify-between border-b border-rule/40 pb-2 hover:bg-white/[0.04] px-2 py-1.5 rounded cursor-pointer transition-all duration-200 group"
+                              title={`Click to filter visitor log by ${entry.country}`}
+                            >
+                              <span className="font-mono text-xs text-foreground/80 group-hover:text-ember transition-colors">{entry.country || "Unknown"}</span>
+                              <span className="font-mono text-xs text-ember font-bold">{entry.count}</span>
+                            </div>
+                          ))}
                         </div>
-                      ))}
+                      </div>
+                      
+                      {totalCountryPages > 1 && (
+                        <div className="flex items-center justify-between font-mono text-[9px] pt-3 mt-2 border-t border-rule/20">
+                          <span className="text-foreground/40 uppercase tracking-widest">
+                            Page {currentCountryPage} / {totalCountryPages}
+                          </span>
+                          <div className="flex gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setCountryPage((p) => Math.max(p - 1, 1))}
+                              disabled={currentCountryPage === 1}
+                              className="p-1 border border-rule/50 bg-black text-foreground hover:bg-card hover:text-ember disabled:opacity-20 disabled:hover:text-foreground disabled:hover:bg-black transition-colors cursor-pointer"
+                              title="Previous page"
+                            >
+                              <ChevronLeft className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setCountryPage((p) => Math.min(p + 1, totalCountryPages))}
+                              disabled={currentCountryPage === totalCountryPages}
+                              className="p-1 border border-rule/50 bg-black text-foreground hover:bg-card hover:text-ember disabled:opacity-20 disabled:hover:text-foreground disabled:hover:bg-black transition-colors cursor-pointer"
+                              title="Next page"
+                            >
+                              <ChevronRight className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     {/* Browser breakdown */}
-                    <div className="border border-rule bg-card/45 p-6 space-y-3">
-                      <p className="font-mono text-[9px] uppercase tracking-[0.3em] text-foreground/50 border-b border-rule pb-3">
-                        Top Browsers
-                      </p>
-                      {metrics.browserBreakdown.map((entry) => (
-                        <div key={entry.browser} className="flex items-center justify-between border-b border-rule/40 pb-2">
-                          <span className="font-mono text-xs text-foreground/80">{entry.browser}</span>
-                          <span className="font-mono text-xs text-ember">{entry.count}</span>
+                    <div className="border border-rule bg-card/45 p-6 flex flex-col justify-between min-h-[270px]">
+                      <div className="space-y-3">
+                        <p className="font-mono text-[9px] uppercase tracking-[0.3em] text-foreground/50 border-b border-rule pb-3">
+                          Top Browsers
+                        </p>
+                        <div className="space-y-2">
+                          {paginatedBrowsers.map((entry) => (
+                            <div
+                              key={entry.browser}
+                              onClick={() => filterVisitorLog(entry.browser)}
+                              className="flex items-center justify-between border-b border-rule/40 pb-2 hover:bg-white/[0.04] px-2 py-1.5 rounded cursor-pointer transition-all duration-200 group"
+                              title={`Click to filter visitor log by ${entry.browser}`}
+                            >
+                              <span className="font-mono text-xs text-foreground/80 group-hover:text-ember transition-colors">{entry.browser || "Unknown"}</span>
+                              <span className="font-mono text-xs text-ember font-bold">{entry.count}</span>
+                            </div>
+                          ))}
                         </div>
-                      ))}
+                      </div>
+
+                      {totalBrowserPages > 1 && (
+                        <div className="flex items-center justify-between font-mono text-[9px] pt-3 mt-2 border-t border-rule/20">
+                          <span className="text-foreground/40 uppercase tracking-widest">
+                            Page {currentBrowserPage} / {totalBrowserPages}
+                          </span>
+                          <div className="flex gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setBrowserPage((p) => Math.max(p - 1, 1))}
+                              disabled={currentBrowserPage === 1}
+                              className="p-1 border border-rule/50 bg-black text-foreground hover:bg-card hover:text-ember disabled:opacity-20 disabled:hover:text-foreground disabled:hover:bg-black transition-colors cursor-pointer"
+                              title="Previous page"
+                            >
+                              <ChevronLeft className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setBrowserPage((p) => Math.min(p + 1, totalBrowserPages))}
+                              disabled={currentBrowserPage === totalBrowserPages}
+                              className="p-1 border border-rule/50 bg-black text-foreground hover:bg-card hover:text-ember disabled:opacity-20 disabled:hover:text-foreground disabled:hover:bg-black transition-colors cursor-pointer"
+                              title="Next page"
+                            >
+                              <ChevronRight className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -2011,16 +2348,32 @@ export default function AdminPage() {
                           </button>
                         )}
                       </div>
-                      <input
-                        type="text"
-                        placeholder="Search IP, Country, City, Browser..."
-                        value={visitorSearch}
-                        onChange={(e) => {
-                          setVisitorSearch(e.target.value);
-                          setVisitorPage(1);
-                        }}
-                        className="bg-black border border-rule/65 px-3 py-1.5 outline-none focus:border-ember text-[11px] font-mono text-foreground placeholder-foreground/30 w-full sm:w-64 transition-all"
-                      />
+                      <div className="relative w-full sm:w-64">
+                        <input
+                          id="visitor-log-search"
+                          type="text"
+                          placeholder="Search IP, Country, City, Browser..."
+                          value={visitorSearch}
+                          onChange={(e) => {
+                            setVisitorSearch(e.target.value);
+                            setVisitorPage(1);
+                          }}
+                          className="bg-black border border-rule/65 pl-3 pr-8 py-1.5 outline-none focus:border-ember text-[11px] font-mono text-foreground placeholder-foreground/30 w-full transition-all"
+                        />
+                        {visitorSearch && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setVisitorSearch("");
+                              setVisitorPage(1);
+                            }}
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-foreground/45 hover:text-ember transition-colors p-0.5 cursor-pointer"
+                            title="Clear search filter"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </div>
 
                     <div className="overflow-x-auto">
@@ -2069,9 +2422,10 @@ export default function AdminPage() {
                             paginatedVisitors.map((row, i) => {
                               const ipKey = row.ip || "unknown";
                               const isSelected = selectedVisitors.includes(ipKey);
-                              const isOnline = !row.exitTime || (row.entryTime && new Date(row.exitTime) < new Date(row.entryTime));
+                              const isOnline = (!row.exitTime || (row.entryTime && new Date(row.exitTime) < new Date(row.entryTime))) && (row.lastSeen && nowMs - new Date(row.lastSeen).getTime() < 30 * 60 * 1000);
+                              const isBlocked = row.blocked === true;
                               return (
-                                <tr key={row.id || i} className={`border-b border-rule/40 transition-colors ${isSelected ? 'bg-ember/[0.03] hover:bg-ember/[0.05]' : 'hover:bg-white/[0.02]'}`}>
+                                <tr key={row.id || i} className={`border-b border-rule/40 transition-colors ${isBlocked ? 'bg-red-950/15 hover:bg-red-950/25' : isSelected ? 'bg-ember/[0.03] hover:bg-ember/[0.05]' : 'hover:bg-white/[0.02]'}`}>
                                   <td className="px-4 py-3 text-left">
                                     <input
                                       type="checkbox"
@@ -2080,7 +2434,12 @@ export default function AdminPage() {
                                       className="accent-ember h-3.5 w-3.5 cursor-pointer bg-black border border-rule rounded-sm focus:ring-0 outline-none"
                                     />
                                   </td>
-                                  <td className="px-4 py-3 font-mono text-[11px] text-foreground/80">{row.ip || "unknown"}</td>
+                                  <td className="px-4 py-3 font-mono text-[11px] text-foreground/80">
+                                    <span className="flex items-center gap-2">
+                                      {isBlocked && <ShieldBan className="h-3 w-3 text-red-500 shrink-0" />}
+                                      {row.ip || "unknown"}
+                                    </span>
+                                  </td>
                                   <td className="px-4 py-3 font-mono text-[11px] text-foreground/80">
                                     {row.city || "Unknown"}, {row.country || "Unknown"}
                                   </td>
@@ -2100,20 +2459,34 @@ export default function AdminPage() {
                                         Online
                                       </span>
                                     ) : (
-                                      <span className="text-foreground/40" title={row.exitTime}>
-                                        {formatRelativeTime(row.exitTime!)}
+                                      <span className="text-foreground/40" title={row.exitTime || row.lastSeen}>
+                                        {row.exitTime ? formatRelativeTime(row.exitTime) : row.lastSeen ? `${formatRelativeTime(row.lastSeen)} (inactive)` : "—"}
                                       </span>
                                     )}
                                   </td>
                                   <td className="px-4 py-2 text-right">
-                                    <button
-                                      type="button"
-                                      onClick={() => deleteVisitor(row.ip)}
-                                      className="text-red-500/70 hover:text-red-400 p-1 bg-red-950/0 hover:bg-red-950/20 transition-all rounded"
-                                      title="Delete Visitor Record"
-                                    >
-                                      <Trash className="h-3.5 w-3.5" />
-                                    </button>
+                                    <div className="flex items-center justify-end gap-1">
+                                      <button
+                                        type="button"
+                                        onClick={() => toggleBlockVisitor(row.ip, isBlocked)}
+                                        className={`p-1 transition-all rounded ${
+                                          isBlocked
+                                            ? 'text-red-500 hover:text-red-300 bg-red-950/20 hover:bg-red-950/40 border border-red-500/30'
+                                            : 'text-foreground/40 hover:text-ember hover:bg-ember/10'
+                                        }`}
+                                        title={isBlocked ? 'Unblock this IP' : 'Block this IP'}
+                                      >
+                                        {isBlocked ? <ShieldBan className="h-3.5 w-3.5" /> : <ShieldCheck className="h-3.5 w-3.5" />}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => deleteVisitor(row.ip)}
+                                        className="text-red-500/70 hover:text-red-400 p-1 bg-red-950/0 hover:bg-red-950/20 transition-all rounded"
+                                        title="Delete Visitor Record"
+                                      >
+                                        <Trash className="h-3.5 w-3.5" />
+                                      </button>
+                                    </div>
                                   </td>
                                 </tr>
                               );
@@ -2124,48 +2497,70 @@ export default function AdminPage() {
                     </div>
 
                     {/* Pagination Controls */}
-                    {totalPages > 1 && (
-                      <div className="flex items-center justify-between border-t border-rule/40 pt-4 font-mono text-[11px]">
-                        <span className="text-foreground/40">
-                          Showing {startIndex + 1}-{Math.min(startIndex + visitorPageSize, totalItems)} of {totalItems}
-                        </span>
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => setVisitorPage(1)}
-                            disabled={currentPage === 1}
-                            className="px-2.5 py-1.5 border border-rule/50 bg-black text-foreground hover:bg-card disabled:opacity-30 disabled:hover:bg-black transition-colors"
-                          >
-                            &lt;&lt;
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setVisitorPage(p => Math.max(p - 1, 1))}
-                            disabled={currentPage === 1}
-                            className="px-2.5 py-1.5 border border-rule/50 bg-black text-foreground hover:bg-card disabled:opacity-30 disabled:hover:bg-black transition-colors"
-                          >
-                            &lt;
-                          </button>
-                          <span className="px-4 py-1.5 border border-rule/30 bg-card/20 text-foreground/80">
-                            Page {currentPage} of {totalPages}
+                    {totalItems > 0 && (
+                      <div className="flex flex-wrap items-center justify-between gap-4 border-t border-rule/40 pt-4 font-mono text-[11px]">
+                        <div className="flex items-center gap-4">
+                          <span className="text-foreground/40">
+                            Showing {startIndex + 1}-{Math.min(startIndex + visitorPageSize, totalItems)} of {totalItems}
                           </span>
-                          <button
-                            type="button"
-                            onClick={() => setVisitorPage(p => Math.min(p + 1, totalPages))}
-                            disabled={currentPage === totalPages}
-                            className="px-2.5 py-1.5 border border-rule/50 bg-black text-foreground hover:bg-card disabled:opacity-30 disabled:hover:bg-black transition-colors"
-                          >
-                            &gt;
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setVisitorPage(totalPages)}
-                            disabled={currentPage === totalPages}
-                            className="px-2.5 py-1.5 border border-rule/50 bg-black text-foreground hover:bg-card disabled:opacity-30 disabled:hover:bg-black transition-colors"
-                          >
-                            &gt;&gt;
-                          </button>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-foreground/40">Show:</span>
+                            <select
+                              value={visitorPageSize}
+                              onChange={(e) => {
+                                setVisitorPageSize(Number(e.target.value));
+                                setVisitorPage(1);
+                              }}
+                              className="bg-black border border-rule/50 text-foreground/80 px-2 py-0.5 font-mono text-[11px] focus:outline-none focus:border-ember transition-colors cursor-pointer"
+                            >
+                              <option value={10}>10</option>
+                              <option value={25}>25</option>
+                              <option value={50}>50</option>
+                              <option value={100}>100</option>
+                            </select>
+                            <span className="text-foreground/40">entries</span>
+                          </div>
                         </div>
+
+                        {totalPages > 1 && (
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setVisitorPage(1)}
+                              disabled={currentPage === 1}
+                              className="px-2.5 py-1.5 border border-rule/50 bg-black text-foreground hover:bg-card disabled:opacity-30 disabled:hover:bg-black transition-colors"
+                            >
+                              &lt;&lt;
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setVisitorPage(p => Math.max(p - 1, 1))}
+                              disabled={currentPage === 1}
+                              className="px-2.5 py-1.5 border border-rule/50 bg-black text-foreground hover:bg-card disabled:opacity-30 disabled:hover:bg-black transition-colors"
+                            >
+                              &lt;
+                            </button>
+                            <span className="px-4 py-1.5 border border-rule/30 bg-card/20 text-foreground/80">
+                              Page {currentPage} of {totalPages}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setVisitorPage(p => Math.min(p + 1, totalPages))}
+                              disabled={currentPage === totalPages}
+                              className="px-2.5 py-1.5 border border-rule/50 bg-black text-foreground hover:bg-card disabled:opacity-30 disabled:hover:bg-black transition-colors"
+                            >
+                              &gt;
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setVisitorPage(totalPages)}
+                              disabled={currentPage === totalPages}
+                              className="px-2.5 py-1.5 border border-rule/50 bg-black text-foreground hover:bg-card disabled:opacity-30 disabled:hover:bg-black transition-colors"
+                            >
+                              &gt;&gt;
+                            </button>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -2174,7 +2569,791 @@ export default function AdminPage() {
             </div>
           </div>
         )}
+
+        {/* ==================== GRAPHS TAB ==================== */}
+        {activeTab === "graphs" && (
+          <div className="space-y-6">
+            <div className="border border-rule bg-card p-6 sm:p-8 space-y-6 relative overflow-hidden backdrop-blur-sm">
+              <div className="absolute inset-0 bg-[radial-gradient(circle_at_bottom_left,rgba(255,123,0,0.03),transparent_50%)] pointer-events-none" />
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-rule pb-3 gap-2 relative z-10">
+                <div className="space-y-1">
+                  <h3 className="text-sm text-ember uppercase tracking-widest font-semibold font-mono flex items-center gap-2">
+                    ✦ Telemetry Trend Graphs
+                  </h3>
+                  <p className="text-[10px] text-foreground/40 font-mono uppercase tracking-wider">
+                    Visualizing visitor metrics and audience traffic patterns
+                  </p>
+                </div>
+                <button
+                  onClick={fetchAnalytics}
+                  disabled={analyticsLoading}
+                  className="font-mono text-[9px] uppercase tracking-wider text-ember hover:text-white border border-ember/30 bg-ember/5 hover:bg-ember px-3 py-1 transition-all disabled:opacity-40"
+                >
+                  {analyticsLoading ? "Synching..." : "Refresh Feed"}
+                </button>
+              </div>
+
+              {/* Loader */}
+              {analyticsLoading && analyticsData.length === 0 && (
+                <div className="py-12 text-center text-foreground/45 font-mono text-[10px] uppercase tracking-widest animate-pulse relative z-10">
+                  Initializing telemetry feed...
+                </div>
+              )}
+
+              {/* Error */}
+              {analyticsError && (
+                <div className="p-4 border border-red-500/40 bg-red-950/20 text-red-400 text-xs font-mono text-left space-y-2 relative z-10">
+                  <p className="uppercase tracking-wider font-semibold text-[9px] text-red-500">✦ Connection Failure</p>
+                  <p className="text-[10px] text-foreground/80">{analyticsError}</p>
+                  <button
+                    onClick={fetchAnalytics}
+                    className="underline text-red-400 hover:text-red-300 font-mono text-[10px] uppercase"
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
+
+              {/* Empty state */}
+              {isConfigured && !analyticsLoading && !analyticsError && analyticsData.length === 0 && (
+                <div className="border border-dashed border-rule p-12 text-center text-foreground/30 font-mono text-[10px] uppercase tracking-wider relative z-10">
+                  No telemetry recorded yet.
+                </div>
+              )}
+
+              {/* Graphs dashboard content */}
+              {isConfigured && !analyticsLoading && !analyticsError && analyticsData.length > 0 && (
+                <div className="space-y-8 relative z-10">
+                  {(() => {
+                    // Compute chart data based on filter
+                    const buckets = new Map<string, number>();
+                    const now = new Date();
+
+                    analyticsData.forEach((v) => {
+                      if (!v.firstSeen) return;
+                      const d = new Date(v.firstSeen);
+                      let key = "";
+                      if (chartFilter === "day") {
+                        key = d.toISOString().slice(0, 10); // YYYY-MM-DD
+                      } else if (chartFilter === "month") {
+                        key = d.toISOString().slice(0, 7); // YYYY-MM
+                      } else {
+                        key = String(d.getUTCFullYear()); // YYYY
+                      }
+                      buckets.set(key, (buckets.get(key) ?? 0) + 1);
+                    });
+
+                    // Generate all labels for the range in UTC to avoid timezone shifting/omitting
+                    const allLabels: string[] = [];
+                    if (chartFilter === "day") {
+                      const utcToday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+                      for (let i = 29; i >= 0; i--) {
+                        const d = new Date(utcToday);
+                        d.setUTCDate(d.getUTCDate() - i);
+                        allLabels.push(d.toISOString().slice(0, 10));
+                      }
+                    } else if (chartFilter === "month") {
+                      for (let i = 11; i >= 0; i--) {
+                        const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+                        allLabels.push(d.toISOString().slice(0, 7));
+                      }
+                    } else {
+                      const years = Array.from(buckets.keys()).map(Number).filter(Boolean);
+                      const currentUtcYear = now.getUTCFullYear();
+                      if (years.length > 0) {
+                        const minY = Math.min(...years);
+                        const maxY = Math.max(...years, currentUtcYear);
+                        for (let y = minY; y <= maxY; y++) allLabels.push(String(y));
+                      } else {
+                        allLabels.push(String(currentUtcYear));
+                      }
+                    }
+
+                    const chartData = allLabels.map((label) => ({
+                      label,
+                      count: buckets.get(label) ?? 0,
+                    }));
+                    const maxCount = Math.max(...chartData.map((d) => d.count), 1);
+                    const totalInPeriod = chartData.reduce((s, d) => s + d.count, 0);
+
+                    // SVG dimensions
+                    const svgW = 750;
+                    const svgH = 290;
+                    const padX = 40;
+                    const padTop = 20;
+                    const padBot = 65;
+                    const plotW = svgW - padX * 2;
+                    const plotH = svgH - padTop - padBot;
+
+                    const points = chartData.map((d, i) => {
+                      const x = padX + (chartData.length > 1 ? (i / (chartData.length - 1)) * plotW : plotW / 2);
+                      const y = padTop + plotH - (d.count / maxCount) * plotH;
+                      return { x, y, ...d };
+                    });
+                    const polyline = points.map((p) => `${p.x},${p.y}`).join(" ");
+                    const areaPath = points.length > 0
+                      ? `M${points[0].x},${padTop + plotH} ` +
+                        points.map((p) => `L${p.x},${p.y}`).join(" ") +
+                        ` L${points[points.length - 1].x},${padTop + plotH} Z`
+                      : "";
+
+                    // Short label formatter
+                    const shortLabel = (l: string) => {
+                      if (chartFilter === "day") return l.slice(5); // MM-DD
+                      if (chartFilter === "month") {
+                        const [y, m] = l.split("-");
+                        const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+                        return months[parseInt(m) - 1] || l;
+                      }
+                      return l;
+                    };
+
+                    return (
+                      <div className="space-y-6">
+                        {/* Filter controls & Header summary */}
+                        <div className="flex items-center justify-between flex-wrap gap-4 border border-rule/35 bg-black/30 p-4">
+                          <div className="space-y-1">
+                            <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-foreground/45">
+                              Active Filter range
+                            </p>
+                            <p className="font-mono text-[11px] text-foreground/80">
+                              Total new visitors tracked: <span className="text-ember font-bold">{totalInPeriod}</span>
+                            </p>
+                          </div>
+                          <div className="flex gap-1.5">
+                            {(["day", "month", "year"] as const).map((f) => (
+                              <button
+                                key={f}
+                                onClick={() => setChartFilter(f)}
+                                className={`px-4 py-2 font-mono text-[9px] uppercase tracking-wider border transition-all duration-200 ${
+                                  chartFilter === f
+                                    ? "bg-ember text-black border-ember font-bold"
+                                    : "bg-black/40 text-foreground/45 border-rule/45 hover:text-foreground hover:border-rule"
+                                }`}
+                              >
+                                {f === "day" ? "30 Days" : f === "month" ? "12 Months" : "Yearly"}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Vertical stack of graphs to maximize width & prevent label truncation */}
+                        <div className="space-y-6">
+                          {/* Trend Line Chart */}
+                          <div className="border border-rule bg-card/45 p-6 overflow-hidden flex flex-col justify-between">
+                            <div>
+                              <div className="flex justify-between items-center border-b border-rule pb-3 mb-4">
+                                <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-foreground/70">
+                                  ✦ Trend Line Visualizer
+                                </p>
+                                <p className="font-mono text-[8px] text-foreground/30 uppercase tracking-widest">
+                                  Peak: {maxCount} visits
+                                </p>
+                              </div>
+                              <div className="w-full overflow-x-auto">
+                                <svg viewBox={`0 0 ${svgW} ${svgH}`} className="w-full min-w-[600px]" style={{ height: "240px" }}>
+                                  <defs>
+                                    <linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
+                                      <stop offset="0%" stopColor="oklch(0.72 0.18 55)" stopOpacity="0.4" />
+                                      <stop offset="100%" stopColor="oklch(0.72 0.18 55)" stopOpacity="0.01" />
+                                    </linearGradient>
+                                  </defs>
+
+                                  {/* Grid lines */}
+                                  {[0, 0.25, 0.5, 0.75, 1].map((frac, i) => {
+                                    const y = padTop + plotH - frac * plotH;
+                                    return (
+                                      <g key={i}>
+                                        <line x1={padX} y1={y} x2={svgW - padX} y2={y} stroke="oklch(0.94 0.02 85 / 0.08)" strokeWidth="1" />
+                                        <text
+                                          x={padX - 8}
+                                          y={y + 3}
+                                          textAnchor="end"
+                                          fill="oklch(0.94 0.02 85 / 0.45)"
+                                          fontSize="9"
+                                          fontFamily="system-ui, -apple-system, sans-serif"
+                                          fontWeight="500"
+                                        >
+                                          {Math.round(frac * maxCount)}
+                                        </text>
+                                      </g>
+                                    );
+                                  })}
+
+                                  {/* Area fill */}
+                                  {areaPath && <path d={areaPath} fill="url(#areaGrad)" />}
+
+                                  {/* Line */}
+                                  {points.length > 1 && (
+                                    <polyline
+                                      points={polyline}
+                                      fill="none"
+                                      stroke="oklch(0.72 0.18 55)"
+                                      strokeWidth="2.5"
+                                      strokeLinejoin="round"
+                                      strokeLinecap="round"
+                                    />
+                                  )}
+
+                                  {/* Data points and rotated labels for ALL days */}
+                                  {points.map((p, i) => (
+                                    <g key={i}>
+                                      <circle cx={p.x} cy={p.y} r="4" fill="oklch(0.72 0.18 55)" stroke="black" strokeWidth="1.5" />
+                                      <title>{`${shortLabel(p.label)}: ${p.count} visitor${p.count !== 1 ? "s" : ""}`}</title>
+                                      <text
+                                        x={p.x}
+                                        y={svgH - padBot + 15}
+                                        textAnchor="end"
+                                        fill="oklch(0.94 0.02 85 / 0.65)"
+                                        fontSize="9.5"
+                                        fontFamily="system-ui, -apple-system, sans-serif"
+                                        fontWeight="600"
+                                        transform={`rotate(-45, ${p.x}, ${svgH - padBot + 15})`}
+                                      >
+                                        {shortLabel(p.label)}
+                                      </text>
+                                    </g>
+                                  ))}
+                                </svg>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Bar Graph */}
+                          <div className="border border-rule bg-card/45 p-6 flex flex-col justify-between">
+                            <div>
+                              <div className="flex justify-between items-center border-b border-rule pb-3 mb-6">
+                                <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-foreground/70">
+                                  ✦ Bar Distribution Graph
+                                </p>
+                              </div>
+                              {/* The container has a height, and each child column has equal baseline */}
+                              <div className="flex items-end gap-1.5 sm:gap-2 px-2" style={{ height: "160px" }}>
+                                {chartData.map((d, i) => {
+                                  const pct = maxCount > 0 ? (d.count / maxCount) * 100 : 0;
+                                  return (
+                                    <div key={i} className="flex-1 flex flex-col items-center justify-end h-full min-w-0 group relative">
+                                      {/* Tooltip */}
+                                      <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-black border border-ember/50 px-2 py-0.5 font-mono text-[8px] text-ember whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 shadow-lg">
+                                        {d.count} visitor{d.count !== 1 ? "s" : ""}
+                                      </div>
+                                      {/* Bar */}
+                                      <div
+                                        className="w-full rounded-t-sm transition-all duration-500 ease-out group-hover:opacity-100"
+                                        style={{
+                                          height: `${Math.max(pct, d.count > 0 ? 3 : 0)}%`,
+                                          background: d.count > 0
+                                            ? "linear-gradient(to top, oklch(0.72 0.18 55 / 0.55), oklch(0.72 0.18 55))"
+                                            : "oklch(0.94 0.02 85 / 0.06)",
+                                          opacity: d.count > 0 ? 0.9 : 0.25,
+                                          minHeight: d.count > 0 ? "5px" : "1.5px",
+                                        }}
+                                      />
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                              {/* Separate labels row to guarantee exact vertical alignment for all columns */}
+                              <div className="flex gap-1.5 sm:gap-2 px-2 mt-3 h-14 relative overflow-visible">
+                                {chartData.map((d, i) => (
+                                  <div key={i} className="flex-1 flex items-start justify-center min-w-0 relative">
+                                    <span className="absolute top-1 text-[9.5px] text-foreground/65 font-semibold tracking-wider whitespace-nowrap transform -rotate-45 origin-top-right -translate-x-[25%]">
+                                      {shortLabel(d.label)}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {activeTab === "feedback" && (
+          <div className="border border-rule bg-card p-6 sm:p-8 space-y-6 relative overflow-hidden backdrop-blur-sm">
+            <div className="flex justify-between items-center border-b border-rule pb-4">
+              <h2 className="text-sm font-mono uppercase tracking-[0.2em] text-ember flex items-center gap-2">
+                ✦ Audience Reviews & Critique
+              </h2>
+              <span className="font-mono text-[10px] text-foreground/45">
+                {feedbackList.length} REVIEW{feedbackList.length !== 1 ? "S" : ""} RECORDED
+              </span>
+            </div>
+
+            {(() => {
+              const filteredFeedback = feedbackList.filter((item) => {
+                if (feedbackFilterRating === "all") return true;
+                return String(item.rating) === feedbackFilterRating;
+              });
+
+              const totalFeedbackItems = filteredFeedback.length;
+              const totalFeedbackPages = Math.max(Math.ceil(totalFeedbackItems / feedbackPageSize), 1);
+              const currentFeedbackPage = Math.min(feedbackPage, totalFeedbackPages);
+              const feedbackStartIndex = (currentFeedbackPage - 1) * feedbackPageSize;
+              const paginatedFeedback = filteredFeedback.slice(
+                feedbackStartIndex,
+                feedbackStartIndex + feedbackPageSize
+              );
+
+              return (
+                <>
+                  <div className="flex flex-wrap items-center justify-between gap-4 border-b border-rule/35 pb-4">
+                    <div className="flex flex-wrap items-center gap-4">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-[10px] text-foreground/45">RATING FILTER:</span>
+                        <select
+                          value={feedbackFilterRating}
+                          onChange={(e) => {
+                            setFeedbackFilterRating(e.target.value);
+                            setFeedbackPage(1);
+                          }}
+                          className="bg-black border border-rule/50 text-foreground/80 px-2 py-1 font-mono text-[11px] focus:outline-none focus:border-ember transition-colors cursor-pointer"
+                        >
+                          <option value="all">All Ratings</option>
+                          <option value="5">★★★★★ (5 Stars)</option>
+                          <option value="4">★★★★☆ (4 Stars)</option>
+                          <option value="3">★★★☆☆ (3 Stars)</option>
+                          <option value="2">★★☆☆☆ (2 Stars)</option>
+                          <option value="1">★☆☆☆☆ (1 Star)</option>
+                        </select>
+                      </div>
+                    </div>
+                    <span className="font-mono text-[10px] text-foreground/45">
+                      {totalFeedbackItems} MATCHING REVIEW{totalFeedbackItems !== 1 ? "S" : ""}
+                    </span>
+                  </div>
+
+                  {feedbackLoading ? (
+                    <div className="py-20 text-center font-mono text-[10px] text-foreground/40 uppercase tracking-widest flicker">
+                      Loading database records...
+                    </div>
+                  ) : totalFeedbackItems === 0 ? (
+                    <div className="py-20 text-center font-mono text-[10px] text-foreground/40 uppercase tracking-widest">
+                      No matching reviews found.
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      <div className="border border-rule/50 bg-black/40 overflow-x-auto rounded relative">
+                        <table className="w-full text-left border-collapse">
+                          <thead>
+                            <tr className="border-b border-rule bg-card/60">
+                              <th className="px-4 py-3 font-mono text-[9px] uppercase tracking-widest text-foreground/40 select-none w-10">
+                                {/* Chevron */}
+                              </th>
+                              <th className="px-4 py-3 font-mono text-[9px] uppercase tracking-widest text-foreground/40 select-none">
+                                Name
+                              </th>
+                              <th className="px-4 py-3 font-mono text-[9px] uppercase tracking-widest text-foreground/40 select-none">
+                                Email
+                              </th>
+                              <th className="px-4 py-3 font-mono text-[9px] uppercase tracking-widest text-foreground/40 select-none">
+                                Rating
+                              </th>
+                              <th className="px-4 py-3 font-mono text-[9px] uppercase tracking-widest text-foreground/40 select-none">
+                                Date
+                              </th>
+                              <th className="text-right px-4 py-3 font-mono text-[9px] uppercase tracking-widest text-foreground/40 select-none w-20">
+                                Actions
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {paginatedFeedback.map((item, i) => {
+                              const isExpanded = expandedFeedbackIds.includes(item.id);
+                              return (
+                                <React.Fragment key={item.id || i}>
+                                  <tr 
+                                    className="border-b border-rule/35 hover:bg-white/[0.02] transition-colors cursor-pointer" 
+                                    onClick={() => toggleExpandFeedback(item.id)}
+                                  >
+                                    <td className="px-4 py-3 text-center">
+                                      <span className="text-[10px] text-ember font-mono font-bold transition-transform inline-block">
+                                        {isExpanded ? "▼" : "▶"}
+                                      </span>
+                                    </td>
+                                    <td className="px-4 py-3 font-mono text-[11px] text-foreground font-bold">
+                                      {item.name}
+                                    </td>
+                                    <td className="px-4 py-3 font-mono text-[11px]" onClick={(e) => e.stopPropagation()}>
+                                      <a 
+                                        href={`mailto:${item.email}`}
+                                        className="text-ember hover:underline"
+                                      >
+                                        {item.email}
+                                      </a>
+                                    </td>
+                                    <td className="px-4 py-3 font-mono text-[11px]">
+                                      <div className="flex items-center text-amber-500 text-xs">
+                                        {"★".repeat(item.rating || 0)}
+                                        {"☆".repeat(5 - (item.rating || 0))}
+                                      </div>
+                                    </td>
+                                    <td className="px-4 py-3 font-mono text-[11px] text-foreground/50">
+                                      {item.createdAt ? new Date(item.createdAt).toLocaleString() : ""}
+                                    </td>
+                                    <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
+                                      <button
+                                        onClick={() => handleDeleteFeedback(item.id)}
+                                        className="p-1.5 text-foreground/40 hover:text-red-500 hover:bg-red-500/10 rounded transition-all inline-flex items-center justify-center border border-rule/30"
+                                        title="Delete review"
+                                      >
+                                        <Trash className="h-3.5 w-3.5" />
+                                      </button>
+                                    </td>
+                                  </tr>
+                                  
+                                  {isExpanded && (
+                                    <tr className="border-b border-rule/35 bg-black/50">
+                                      <td colSpan={6} className="px-8 py-4 font-mono text-xs text-foreground/85 leading-relaxed whitespace-pre-wrap border-l-2 border-ember">
+                                        <div className="space-y-1">
+                                          <div className="text-[8px] uppercase tracking-widest text-foreground/30 font-semibold">Critique & Suggestions Details</div>
+                                          <p className="pl-2 border-l border-rule/40 text-foreground/90">{item.message}</p>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  )}
+                                </React.Fragment>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      {totalFeedbackItems > 0 && (
+                        <div className="flex flex-wrap items-center justify-between gap-4 border-t border-rule/40 pt-4 font-mono text-[11px]">
+                          <div className="flex items-center gap-4">
+                            <span className="text-foreground/40">
+                              Showing {feedbackStartIndex + 1}-{Math.min(feedbackStartIndex + feedbackPageSize, totalFeedbackItems)} of {totalFeedbackItems}
+                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-foreground/40">Show:</span>
+                              <select
+                                value={feedbackPageSize}
+                                onChange={(e) => {
+                                  setFeedbackPageSize(Number(e.target.value));
+                                  setFeedbackPage(1);
+                                }}
+                                className="bg-black border border-rule/50 text-foreground/80 px-2 py-0.5 font-mono text-[11px] focus:outline-none focus:border-ember transition-colors cursor-pointer"
+                              >
+                                <option value={5}>5</option>
+                                <option value={10}>10</option>
+                                <option value={25}>25</option>
+                                <option value={50}>50</option>
+                              </select>
+                              <span className="text-foreground/40">entries</span>
+                            </div>
+                          </div>
+
+                          {totalFeedbackPages > 1 && (
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => setFeedbackPage(1)}
+                                disabled={currentFeedbackPage === 1}
+                                className="px-2.5 py-1.5 border border-rule/50 bg-black text-foreground hover:bg-card disabled:opacity-30 disabled:hover:bg-black transition-colors"
+                              >
+                                &lt;&lt;
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setFeedbackPage(p => Math.max(p - 1, 1))}
+                                disabled={currentFeedbackPage === 1}
+                                className="px-2.5 py-1.5 border border-rule/50 bg-black text-foreground hover:bg-card disabled:opacity-30 disabled:hover:bg-black transition-colors"
+                              >
+                                &lt;
+                              </button>
+                              <span className="px-4 py-1.5 border border-rule/30 bg-card/20 text-foreground/80">
+                                Page {currentFeedbackPage} of {totalFeedbackPages}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setFeedbackPage(p => Math.min(p + 1, totalFeedbackPages))}
+                                disabled={currentFeedbackPage === totalFeedbackPages}
+                                className="px-2.5 py-1.5 border border-rule/50 bg-black text-foreground hover:bg-card disabled:opacity-30 disabled:hover:bg-black transition-colors"
+                              >
+                                &gt;
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setFeedbackPage(totalFeedbackPages)}
+                                disabled={currentFeedbackPage === totalFeedbackPages}
+                                className="px-2.5 py-1.5 border border-rule/50 bg-black text-foreground hover:bg-card disabled:opacity-30 disabled:hover:bg-black transition-colors"
+                              >
+                                &gt;&gt;
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
+              );
+            })()}
+          </div>
+        )}
+
+        {activeTab === "tips" && (
+          <div className="border border-rule bg-card p-6 sm:p-8 space-y-6 relative overflow-hidden backdrop-blur-sm">
+            <div className="flex justify-between items-center border-b border-rule pb-4">
+              <h2 className="text-sm font-mono uppercase tracking-[0.2em] text-ember flex items-center gap-2">
+                ✦ Placement & Interview Tips
+              </h2>
+              <span className="font-mono text-[10px] text-foreground/45">
+                {tipsList.length} TIP{tipsList.length !== 1 ? "S" : ""} RECORDED
+              </span>
+            </div>
+
+            {(() => {
+              const totalTipsItems = tipsList.length;
+              const totalTipsPages = Math.max(Math.ceil(totalTipsItems / tipsPageSize), 1);
+              const currentTipsPage = Math.min(tipsPage, totalTipsPages);
+              const tipsStartIndex = (currentTipsPage - 1) * tipsPageSize;
+              const paginatedTips = tipsList.slice(
+                tipsStartIndex,
+                tipsStartIndex + tipsPageSize
+              );
+
+              return (
+                <>
+                  {tipsLoading ? (
+                    <div className="py-20 text-center font-mono text-[10px] text-foreground/40 uppercase tracking-widest flicker">
+                      Loading database records...
+                    </div>
+                  ) : totalTipsItems === 0 ? (
+                    <div className="py-20 text-center font-mono text-[10px] text-foreground/40 uppercase tracking-widest">
+                      No placement tips found yet.
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      <div className="border border-rule/50 bg-black/40 overflow-x-auto rounded relative">
+                        <table className="w-full text-left border-collapse">
+                          <thead>
+                            <tr className="border-b border-rule bg-card/60">
+                              <th className="px-4 py-3 font-mono text-[9px] uppercase tracking-widest text-foreground/40 select-none w-10">
+                                {/* Chevron */}
+                              </th>
+                              <th className="px-4 py-3 font-mono text-[9px] uppercase tracking-widest text-foreground/40 select-none">
+                                Email Address
+                              </th>
+                              <th className="px-4 py-3 font-mono text-[9px] uppercase tracking-widest text-foreground/40 select-none">
+                                Company Name
+                              </th>
+                              <th className="px-4 py-3 font-mono text-[9px] uppercase tracking-widest text-foreground/40 select-none">
+                                Tips
+                              </th>
+                              <th className="px-4 py-3 font-mono text-[9px] uppercase tracking-widest text-foreground/40 select-none">
+                                Date Submitted
+                              </th>
+                              <th className="text-right px-4 py-3 font-mono text-[9px] uppercase tracking-widest text-foreground/40 select-none w-20">
+                                Actions
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {paginatedTips.map((item, i) => {
+                              const isExpanded = expandedTipsIds.includes(item.id);
+                              const snippet = item.message && item.message.length > 50 
+                                ? item.message.slice(0, 50) + "..." 
+                                : item.message;
+                              return (
+                                <React.Fragment key={item.id || i}>
+                                  <tr 
+                                    className="border-b border-rule/35 hover:bg-white/[0.02] transition-colors cursor-pointer" 
+                                    onClick={() => toggleExpandTip(item.id)}
+                                  >
+                                    <td className="px-4 py-3 text-center">
+                                      <span className="text-[10px] text-ember font-mono font-bold transition-transform inline-block">
+                                        {isExpanded ? "▼" : "▶"}
+                                      </span>
+                                    </td>
+                                    <td className="px-4 py-3 font-mono text-[11px]" onClick={(e) => e.stopPropagation()}>
+                                      <a 
+                                        href={`mailto:${item.email}`}
+                                        className="text-ember hover:underline font-bold"
+                                      >
+                                        {item.email}
+                                      </a>
+                                    </td>
+                                    <td className="px-4 py-3 font-mono text-[11px]">
+                                      {item.isProfessional ? (
+                                        <span className="text-amber-500 font-bold">💼 {item.companyName || "Professional"}</span>
+                                      ) : (
+                                        <span className="text-foreground/35">Individual</span>
+                                      )}
+                                    </td>
+                                    <td className="px-4 py-3 font-mono text-[11px] text-foreground/70">
+                                      {snippet}
+                                    </td>
+                                    <td className="px-4 py-3 font-mono text-[11px] text-foreground/50">
+                                      {item.createdAt ? new Date(item.createdAt).toLocaleString() : ""}
+                                    </td>
+                                    <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
+                                      <button
+                                        onClick={() => handleDeleteTip(item.id)}
+                                        className="p-1.5 text-foreground/40 hover:text-red-500 hover:bg-red-500/10 rounded transition-all inline-flex items-center justify-center border border-rule/30"
+                                        title="Delete tip"
+                                      >
+                                        <Trash className="h-3.5 w-3.5" />
+                                      </button>
+                                    </td>
+                                  </tr>
+                                  
+                                  {isExpanded && (
+                                    <tr className="border-b border-rule/35 bg-black/50">
+                                      <td colSpan={6} className="px-8 py-4 font-mono text-xs text-foreground/85 leading-relaxed whitespace-pre-wrap border-l-2 border-ember">
+                                        <div className="space-y-3">
+                                          {item.isProfessional && (
+                                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 bg-[#111] p-2 border border-rule/40 rounded text-[10px]">
+                                              <div>
+                                                <span className="text-foreground/45 block uppercase text-[8px]">Full Name</span>
+                                                <span className="font-bold text-foreground/90">{item.fullName || "N/A"}</span>
+                                              </div>
+                                              <div>
+                                                <span className="text-foreground/45 block uppercase text-[8px]">Company</span>
+                                                <span className="font-bold text-amber-500">{item.companyName || "N/A"}</span>
+                                              </div>
+                                              <div>
+                                                <span className="text-foreground/45 block uppercase text-[8px]">Contact Number</span>
+                                                <span className="font-bold text-foreground/90">{item.contactNumber || "N/A"}</span>
+                                              </div>
+                                            </div>
+                                          )}
+                                          <div className="space-y-1">
+                                            <div className="text-[8px] uppercase tracking-widest text-foreground/30 font-semibold">Placement Tip & Advice details</div>
+                                            <p className="pl-2 border-l border-rule/40 text-foreground/90">{item.message}</p>
+                                          </div>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  )}
+                                </React.Fragment>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      {totalTipsItems > 0 && (
+                        <div className="flex flex-wrap items-center justify-between gap-4 border-t border-rule/40 pt-4 font-mono text-[11px]">
+                          <div className="flex items-center gap-4">
+                            <span className="text-foreground/40">
+                              Showing {tipsStartIndex + 1}-{Math.min(tipsStartIndex + tipsPageSize, totalTipsItems)} of {totalTipsItems}
+                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-foreground/40">Show:</span>
+                              <select
+                                value={tipsPageSize}
+                                onChange={(e) => {
+                                  setTipsPageSize(Number(e.target.value));
+                                  setTipsPage(1);
+                                }}
+                                className="bg-black border border-rule/50 text-foreground/80 px-2 py-0.5 font-mono text-[11px] focus:outline-none focus:border-ember transition-colors cursor-pointer"
+                              >
+                                <option value={5}>5</option>
+                                <option value={10}>10</option>
+                                <option value={25}>25</option>
+                                <option value={50}>50</option>
+                              </select>
+                              <span className="text-foreground/40">entries</span>
+                            </div>
+                          </div>
+
+                          {totalTipsPages > 1 && (
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => setTipsPage(1)}
+                                disabled={currentTipsPage === 1}
+                                className="px-2.5 py-1.5 border border-rule/50 bg-black text-foreground hover:bg-card disabled:opacity-30 disabled:hover:bg-black transition-colors"
+                              >
+                                &lt;&lt;
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setTipsPage(p => Math.max(p - 1, 1))}
+                                disabled={currentTipsPage === 1}
+                                className="px-2.5 py-1.5 border border-rule/50 bg-black text-foreground hover:bg-card disabled:opacity-30 disabled:hover:bg-black transition-colors"
+                              >
+                                &lt;
+                              </button>
+                              <span className="px-4 py-1.5 border border-rule/30 bg-card/20 text-foreground/80">
+                                Page {currentTipsPage} of {totalTipsPages}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setTipsPage(p => Math.min(p + 1, totalTipsPages))}
+                                disabled={currentTipsPage === totalTipsPages}
+                                className="px-2.5 py-1.5 border border-rule/50 bg-black text-foreground hover:bg-card disabled:opacity-30 disabled:hover:bg-black transition-colors"
+                              >
+                                &gt;
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setTipsPage(totalTipsPages)}
+                                disabled={currentTipsPage === totalTipsPages}
+                                className="px-2.5 py-1.5 border border-rule/50 bg-black text-foreground hover:bg-card disabled:opacity-30 disabled:hover:bg-black transition-colors"
+                              >
+                                &gt;&gt;
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
+              );
+            })()}
+          </div>
+        )}
+        </div>
       </div>
+
+      {/* Custom Confirmation Modal */}
+      {confirmModal.isOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/85 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md border border-rule bg-card/90 p-1 shadow-2xl relative">
+            {/* Clapperboard stripes */}
+            <div className="border border-rule/40 bg-black overflow-hidden flex h-6 items-center relative mb-4">
+              <div className="absolute inset-0 flex" style={{ background: "repeating-linear-gradient(-45deg, #000, #000 10px, #ff7b00 10px, #ff7b00 20px)" }} />
+              <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
+            </div>
+            
+            <div className="p-6 text-center space-y-6">
+              <div className="space-y-2">
+                <h3 className="font-display text-2xl italic tracking-wide text-foreground">
+                  {confirmModal.title}
+                </h3>
+                <p className="font-mono text-xs text-foreground/60 leading-relaxed break-all">
+                  {confirmModal.message}
+                </p>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setConfirmModal((prev) => ({ ...prev, isOpen: false }))}
+                  className="flex-1 border border-rule bg-black/40 hover:bg-black/80 text-foreground/75 hover:text-foreground font-mono text-[10px] uppercase tracking-widest py-3 transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmModal.onConfirm}
+                  className="flex-1 border border-ember bg-ember/15 text-ember hover:bg-ember hover:text-black font-mono text-[10px] uppercase tracking-widest py-3 font-semibold transition-colors cursor-pointer"
+                >
+                  Confirm
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

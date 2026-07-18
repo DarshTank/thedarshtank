@@ -32,7 +32,7 @@
 * **Framework**: [Next.js 16 (App Router)](https://nextjs.org/) with Turbopack compilation.
 * **Database & Auth**: [Firebase](https://firebase.google.com/) (Firestore database and Google Authentication).
 * **Styling**: Tailwind CSS & custom utility animations in Vanilla CSS.
-* **Emails**: [Resend](https://resend.com/) API client-to-server email integration.
+* **Emails**: Gmail SMTP client-to-server integration via Nodemailer.
 * **Icons**: [Lucide React](https://lucide.dev/) for high-contrast HUD iconography.
 
 ---
@@ -51,8 +51,9 @@ NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=your-project.firebasestorage.app
 NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=your-sender-id
 NEXT_PUBLIC_FIREBASE_APP_ID=your-app-id
 
-# Email Integration API Key
-RESEND_API_KEY=your-resend-api-key
+# Email Integration SMTP (Gmail)
+GMAIL_USER=your-email@gmail.com
+GMAIL_APP_PASSWORD=your-google-app-password
 ```
 
 ---
@@ -65,7 +66,7 @@ thedarshtank/
 │   │   └── page.tsx              # Projection Console Admin Screen
 │   ├── api/
 │   │   ├── contact/
-│   │   │   └── route.ts          # Resend Email Direct Client Endpoint
+│   │   │   └── route.ts          # Gmail SMTP Email Client Endpoint
 │   │   └── upload-resume/
 │   │       └── route.ts          # PDF Resume Upload Service
 │   ├── layout.tsx                # Page Layout & Metadata Links

@@ -122,6 +122,7 @@ export interface VisitorRecord {
   resumeClicks?: number;
   entryTime?: string;
   exitTime?: string;
+  blocked?: boolean;
 }
 
 /** One entry in the country breakdown list. */
@@ -178,17 +179,16 @@ export function computeMetrics(records: VisitorRecord[]): AnalyticsMetrics {
   // Total visit count — sum all visitCount fields
   const totalVisitCount = records.reduce((sum, r) => sum + r.visitCount, 0);
 
-  // Country breakdown — count records per country, top 5 desc
+  // Country breakdown — count records per country, desc
   const countryMap = new Map<string, number>();
   for (const r of records) {
     countryMap.set(r.country, (countryMap.get(r.country) ?? 0) + 1);
   }
   const countryBreakdown: CountryBreakdownEntry[] = Array.from(countryMap.entries())
     .map(([country, count]) => ({ country, count }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 5);
+    .sort((a, b) => b.count - a.count);
 
-  // Browser breakdown — sum visitCount per browser group, top 5 desc
+  // Browser breakdown — sum visitCount per browser group, desc
   const browserMap = new Map<string, number>();
   for (const r of records) {
     const browser = parseBrowserName(r.userAgent);
@@ -196,8 +196,7 @@ export function computeMetrics(records: VisitorRecord[]): AnalyticsMetrics {
   }
   const browserBreakdown: BrowserBreakdownEntry[] = Array.from(browserMap.entries())
     .map(([browser, count]) => ({ browser, count }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 5);
+    .sort((a, b) => b.count - a.count);
 
   // Recent visitors — 10 latest by lastSeen (ISO strings sort lexicographically)
   const recentVisitors: RecentVisitorRow[] = [...records]

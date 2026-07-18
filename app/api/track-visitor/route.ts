@@ -115,6 +115,7 @@ export async function POST(request: Request) {
         entryTime: now,
         exitTime: "",
         resumeClicks: 0,
+        blocked: false,
       });
 
       return NextResponse.json({ tracked: true, new: true });
