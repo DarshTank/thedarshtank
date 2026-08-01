@@ -201,11 +201,11 @@ function useReveal() {
     const observer =
       "IntersectionObserver" in window
         ? new IntersectionObserver(
-            (entries) => {
+            (entries, obs) => {
               entries.forEach((entry) => {
                 if (entry.isIntersecting) {
                   entry.target.classList.add("is-visible");
-                  observer.unobserve(entry.target);
+                  obs.unobserve(entry.target);
                 }
               });
             },
