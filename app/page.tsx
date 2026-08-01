@@ -194,31 +194,59 @@ function useTime() {
 
 function useReveal() {
   useEffect(() => {
-    const items = Array.from(
-      document.querySelectorAll<HTMLElement>("[data-reveal], [data-stagger]"),
-    );
+    if (typeof window === "undefined") return;
 
-    if (!items.length) return;
+    const observedElements = new Set<Element>();
 
-    if (!("IntersectionObserver" in window)) {
-      items.forEach((item) => item.classList.add("is-visible"));
-      return;
-    }
+    const observer =
+      "IntersectionObserver" in window
+        ? new IntersectionObserver(
+            (entries) => {
+              entries.forEach((entry) => {
+                if (entry.isIntersecting) {
+                  entry.target.classList.add("is-visible");
+                  observer.unobserve(entry.target);
+                }
+              });
+            },
+            { rootMargin: "0px 0px -10% 0px", threshold: 0.15 }
+          )
+        : null;
 
-    const observer = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (entry.isIntersecting) {
-            entry.target.classList.add("is-visible");
-            observer.unobserve(entry.target);
+    const observeNewItems = () => {
+      const items = document.querySelectorAll<HTMLElement>(
+        "[data-reveal]:not(.is-visible), [data-stagger]:not(.is-visible)"
+      );
+
+      items.forEach((item) => {
+        if (!observedElements.has(item)) {
+          observedElements.add(item);
+          if (observer) {
+            observer.observe(item);
+          } else {
+            item.classList.add("is-visible");
           }
-        });
-      },
-      { rootMargin: "0px 0px -10% 0px", threshold: 0.15 },
-    );
+        }
+      });
+    };
 
-    items.forEach((item) => observer.observe(item));
-    return () => observer.disconnect();
+    // Initial observation pass
+    observeNewItems();
+
+    // Observe DOM mutations to automatically handle dynamically loaded items (e.g. Firestore projects)
+    const mutationObserver = new MutationObserver(() => {
+      observeNewItems();
+    });
+
+    mutationObserver.observe(document.body, {
+      childList: true,
+      subtree: true,
+    });
+
+    return () => {
+      if (observer) observer.disconnect();
+      mutationObserver.disconnect();
+    };
   }, []);
 }
 
@@ -449,7 +477,7 @@ export default function Index() {
               id: doc.id,
               ...doc.data(),
             }))
-            .filter((p: any) => p.visible !== false) as any[];
+            .filter((p: any) => p.visible !== false && p.visible !== "false") as any[];
           projs.sort((a, b) => {
             const orderA = a.order !== undefined ? Number(a.order) : parseInt(a.no) || 99;
             const orderB = b.order !== undefined ? Number(b.order) : parseInt(b.no) || 99;
@@ -1160,7 +1188,7 @@ export default function Index() {
           <ul className="mt-4">
             {dynamicProjects.map((p, idx) => (
               <li
-                key={p.no || p.id}
+                key={p.id || p.no || idx}
                 className="card-lift group relative grid grid-cols-12 gap-6 border-b border-rule py-12 pl-8 pr-6 sm:px-10 sm:py-16 md:py-20 transition-colors hover:bg-black/30 cursor-[url('data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2224%22%20height%3D%2224%22%20viewBox%3D%200%200%2024%2024%22%3E%3Ccircle%20cx%3D%2212%22%20cy%3D%2212%22%20r%3D%2210%22%20fill%3D%22none%22%20stroke%3D%22%23e8793a%22%20stroke-width%3D%222%22%2F%3E%3Ccircle%20cx%3D%2212%22%20cy%3D%2212%22%20r%3D%222%22%20fill%3D%22%23e8793a%22%2F%3E%3C%2Fsvg%3E')_12_12,pointer]"
                 data-reveal="blur"
               >
@@ -1175,7 +1203,8 @@ export default function Index() {
                   <span className="font-mono text-xs text-ember">{p.no}</span>
                   <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-foreground/40 mt-2">
                     Reel
-                    <br />0{idx + 1}
+                    <br />
+                    {String(idx + 1).padStart(2, "0")}
                   </p>
                 </div>
 

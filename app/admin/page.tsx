@@ -569,7 +569,7 @@ export default function AdminPage() {
     e.preventDefault();
     if (!resumeFile || !user) return;
     try {
-      showStatus("Uploading resume file locally...");
+      showStatus("Uploading resume file to Vercel Blob...");
       
       const formData = new FormData();
       formData.append("file", resumeFile);
@@ -580,7 +580,7 @@ export default function AdminPage() {
         body: formData,
       });
 
-      const data = await res.ok ? await res.json() : null;
+      const data = res.ok ? await res.json() : null;
       if (!res.ok || !data) {
         throw new Error((data && data.error) || "Upload failed");
       }
@@ -596,7 +596,7 @@ export default function AdminPage() {
       setResumeName(data.name);
       setResumeInputUrl(data.url);
       setResumeFile(null);
-      showStatus("Resume file uploaded successfully!");
+      showStatus("Resume file uploaded to Vercel Blob successfully!");
     } catch (err: any) {
       console.error(err);
       showStatus(`Failed: ${err.message || "Check server logs"}`, "error");
@@ -609,17 +609,17 @@ export default function AdminPage() {
       "Are you sure you want to delete the current resume? This will clear it from the database.",
       async () => {
         try {
-          showStatus("Deleting resume...");
+          showStatus("Deleting resume from Vercel Blob...");
           
           if (user) {
             try {
               await fetch("/api/upload-resume", {
                 method: "DELETE",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ email: user.email || "" }),
+                body: JSON.stringify({ email: user.email || "", resumeUrl }),
               });
             } catch (err) {
-              console.warn("Local file deletion failed:", err);
+              console.warn("Vercel Blob file deletion failed:", err);
             }
           }
 

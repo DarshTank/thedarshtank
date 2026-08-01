@@ -1,7 +1,5 @@
 import { NextResponse } from "next/server";
-import { writeFile, unlink } from "fs/promises";
-import { join } from "path";
-import { existsSync } from "fs";
+import { put, del } from "@vercel/blob";
 
 export async function POST(request: Request) {
   try {
@@ -11,10 +9,12 @@ export async function POST(request: Request) {
 
     const allowedEmail = process.env.ADMIN_EMAIL;
     if (!allowedEmail) {
-      return NextResponse.json({ error: "Server misconfiguration: ADMIN_EMAIL not set" }, { status: 500 });
+      return NextResponse.json(
+        { error: "Server misconfiguration: ADMIN_EMAIL not set" },
+        { status: 500 }
+      );
     }
 
-    // Simple security check: Ensure it matches the authorized email
     if (email !== allowedEmail) {
       return NextResponse.json({ error: "Unauthorized access" }, { status: 401 });
     }
@@ -23,43 +23,69 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
     }
 
-    const bytes = await file.arrayBuffer();
-    const buffer = Buffer.from(bytes);
+    const token = process.env.BLOB_READ_WRITE_TOKEN;
+    if (!token) {
+      return NextResponse.json(
+        { error: "Server misconfiguration: BLOB_READ_WRITE_TOKEN environment variable not set" },
+        { status: 500 }
+      );
+    }
 
-    // Save to the public folder
-    const publicPath = join(process.cwd(), "public", "resume.pdf");
-    await writeFile(publicPath, buffer);
+    // Upload directly to Vercel Blob store
+    const safeFilename = file.name.replace(/[^a-zA-Z0-9.-]/g, "_");
+    const blobPath = `resumes/${Date.now()}-${safeFilename}`;
 
-    console.log(`✓ Resume PDF saved locally to public/resume.pdf`);
-    return NextResponse.json({ 
-      success: true, 
-      url: "/resume.pdf", 
-      name: file.name 
+    const blob = await put(blobPath, file, {
+      access: "public",
+      token,
+    });
+
+    console.log(`✓ Resume uploaded to Vercel Blob: ${blob.url}`);
+
+    return NextResponse.json({
+      success: true,
+      url: blob.url,
+      name: file.name,
     });
   } catch (error: any) {
-    console.error("Upload API Error:", error);
-    return NextResponse.json({ error: error.message || "Failed to save file" }, { status: 500 });
+    console.error("Vercel Blob Upload API Error:", error);
+    return NextResponse.json(
+      { error: error.message || "Failed to upload resume to Vercel Blob" },
+      { status: 500 }
+    );
   }
 }
 
 export async function DELETE(request: Request) {
   try {
-    const { email } = await request.json();
+    const { email, resumeUrl } = await request.json();
     const allowedEmail = process.env.ADMIN_EMAIL;
     if (!allowedEmail) {
-      return NextResponse.json({ error: "Server misconfiguration: ADMIN_EMAIL not set" }, { status: 500 });
+      return NextResponse.json(
+        { error: "Server misconfiguration: ADMIN_EMAIL not set" },
+        { status: 500 }
+      );
     }
     if (email !== allowedEmail) {
       return NextResponse.json({ error: "Unauthorized access" }, { status: 401 });
     }
 
-    const publicPath = join(process.cwd(), "public", "resume.pdf");
-    if (existsSync(publicPath)) {
-      await unlink(publicPath);
+    const token = process.env.BLOB_READ_WRITE_TOKEN;
+    if (resumeUrl && token) {
+      try {
+        await del(resumeUrl, { token });
+        console.log(`✓ Deleted resume from Vercel Blob: ${resumeUrl}`);
+      } catch (delError) {
+        console.warn("Failed to delete blob file:", delError);
+      }
     }
+
     return NextResponse.json({ success: true });
   } catch (error: any) {
-    console.error("Delete API Error:", error);
-    return NextResponse.json({ error: error.message || "Failed to delete file" }, { status: 500 });
+    console.error("Vercel Blob Delete API Error:", error);
+    return NextResponse.json(
+      { error: error.message || "Failed to delete resume from Vercel Blob" },
+      { status: 500 }
+    );
   }
 }
