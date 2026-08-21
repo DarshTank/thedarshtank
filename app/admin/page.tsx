@@ -16,6 +16,7 @@ import {
   deleteDoc,
   updateDoc,
   onSnapshot,
+  writeBatch,
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import { auth, db, storage, googleProvider, isConfigured } from "../../lib/firebase";
@@ -39,6 +40,7 @@ import {
   X,
   ChevronLeft,
   ChevronRight,
+  GripVertical,
 } from "lucide-react";
 
 import { type VisitorRecord, computeMetrics, parseBrowserName, formatRelativeTime, sanitizeIp } from "../../lib/analytics";
@@ -99,12 +101,26 @@ interface ProjectData {
 
 interface ExperienceData {
   id?: string;
+  no: string;
   co: string;
   role: string;
   stack: string;
   when: string;
   where: string;
   points: string[];
+  order: number;
+  visible?: boolean;
+}
+
+// Reel number stamped on records that are hidden from the public portfolio —
+// they are skipped when the visible records are numbered.
+const HIDDEN_NO = "--";
+
+type OrderedCollection = "projects" | "experiences";
+
+interface OrderedRecord {
+  id?: string;
+  no: string;
   order: number;
   visible?: boolean;
 }
@@ -190,6 +206,13 @@ export default function AdminPage() {
   const [editingProject, setEditingProject] = useState<Partial<ProjectData> | null>(null);
   const [editingExperience, setEditingExperience] = useState<Partial<ExperienceData> | null>(null);
   const [statusMessage, setStatusMessage] = useState({ text: "", type: "" });
+
+  // Drag-to-reorder state, shared by the projects and experiences lists.
+  const [dragState, setDragState] = useState<{
+    list: OrderedCollection;
+    from: number;
+    over: number;
+  } | null>(null);
 
   // Confirmation modal state
   const [confirmModal, setConfirmModal] = useState<{
@@ -391,20 +414,105 @@ export default function AdminPage() {
     setTimeout(() => setStatusMessage({ text: "", type: "" }), 4000);
   };
 
+  // --- Ordering & auto-numbering ---------------------------------------------
+  // `order` mirrors the drag position and covers every record, hidden or not.
+  // `no` is the public reel number and only counts records that are visible, so
+  // hiding one automatically renumbers everything below it.
+  const applySequence = <T extends OrderedRecord>(list: T[]): T[] => {
+    let reel = 0;
+    return list.map((item, idx) => {
+      const isVisible = item.visible !== false;
+      if (isVisible) reel += 1;
+      return {
+        ...item,
+        order: idx + 1,
+        no: isVisible ? String(reel).padStart(2, "0") : HIDDEN_NO,
+      };
+    });
+  };
+
+  // Writes back only the records whose number or position actually moved.
+  const persistSequence = async (
+    collectionName: OrderedCollection,
+    previous: OrderedRecord[],
+    next: OrderedRecord[]
+  ) => {
+    const before = new Map(previous.map((item) => [item.id, item]));
+    const batch = writeBatch(db);
+    let writes = 0;
+
+    next.forEach((item) => {
+      if (!item.id) return;
+      const old = before.get(item.id);
+      if (old && old.order === item.order && old.no === item.no) return;
+      batch.update(doc(db, collectionName, item.id), { order: item.order, no: item.no });
+      writes += 1;
+    });
+
+    if (writes > 0) await batch.commit();
+  };
+
+  const reorderList = <T,>(list: T[], from: number, to: number): T[] => {
+    const next = [...list];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    return next;
+  };
+
+  const handleDragStart = (list: OrderedCollection, index: number) => {
+    setDragState({ list, from: index, over: index });
+  };
+
+  const handleDragEnter = (list: OrderedCollection, index: number) => {
+    setDragState((prev) =>
+      prev && prev.list === list && prev.over !== index ? { ...prev, over: index } : prev
+    );
+  };
+
+  // Moves a record to the dropped position, renumbers the list optimistically
+  // and rolls the UI back if Firestore rejects the write.
+  const commitDrop = async (list: OrderedCollection, to: number) => {
+    const active = dragState;
+    setDragState(null);
+    if (!active || active.list !== list || active.from === to) return;
+
+    const isProjects = list === "projects";
+    const previous: OrderedRecord[] = isProjects ? projectsList : experiencesList;
+    const next = applySequence(reorderList(previous, active.from, to));
+
+    if (isProjects) setProjectsList(next as ProjectData[]);
+    else setExperiencesList(next as ExperienceData[]);
+
+    try {
+      await persistSequence(list, previous, next);
+      showStatus(isProjects ? "Reel order updated." : "Shoot order updated.");
+    } catch (err) {
+      console.error(err);
+      if (isProjects) setProjectsList(previous as ProjectData[]);
+      else setExperiencesList(previous as ExperienceData[]);
+      showStatus("Failed to save the new order.", "error");
+    }
+  };
+
   const fetchAdminData = async () => {
     if (!isConfigured) return;
     try {
-      // Load Projects
+      // Load Projects — positions and reel numbers are re-derived from the
+      // stored order so gaps left by deletes or hidden records close up.
       const projSnap = await getDocs(collection(db, "projects"));
       const projs = projSnap.docs.map((d) => ({ id: d.id, ...d.data() })) as ProjectData[];
       projs.sort((a, b) => (a.order !== undefined ? a.order : 0) - (b.order !== undefined ? b.order : 0));
-      setProjectsList(projs);
+      const sequencedProjs = applySequence(projs);
+      setProjectsList(sequencedProjs);
+      await persistSequence("projects", projs, sequencedProjs);
 
       // Load Experiences
       const expSnap = await getDocs(collection(db, "experiences"));
       const exps = expSnap.docs.map((d) => ({ id: d.id, ...d.data() })) as ExperienceData[];
       exps.sort((a, b) => (a.order !== undefined ? a.order : 0) - (b.order !== undefined ? b.order : 0));
-      setExperiencesList(exps);
+      const sequencedExps = applySequence(exps);
+      setExperiencesList(sequencedExps);
+      await persistSequence("experiences", exps, sequencedExps);
 
       // Load Socials & Resume
       const socSnap = await getDoc(doc(db, "globals", "socials"));
@@ -731,7 +839,9 @@ export default function AdminPage() {
     try {
       const id = editingProject.id || `proj_${Date.now()}`;
       const payload = {
-        no: editingProject.no || "00",
+        // `no` and `order` are provisional here — fetchAdminData re-sequences
+        // the whole list once the write lands.
+        no: editingProject.no || String(projectsList.length + 1).padStart(2, "0"),
         name: editingProject.name || "Untitled Project",
         year: editingProject.year || "2026",
         role: editingProject.role || "",
@@ -741,7 +851,7 @@ export default function AdminPage() {
         bullets: editingProject.bullets || [],
         githubUrl: editingProject.githubUrl || "",
         projectUrl: editingProject.projectUrl || "",
-        order: Number(editingProject.order) || 0,
+        order: Number(editingProject.order) || projectsList.length + 1,
         visible: editingProject.visible !== false,
       };
 
@@ -780,13 +890,16 @@ export default function AdminPage() {
     try {
       const id = editingExperience.id || `exp_${Date.now()}`;
       const payload = {
+        // `no` and `order` are provisional here — fetchAdminData re-sequences
+        // the whole list once the write lands.
+        no: editingExperience.no || String(experiencesList.length + 1).padStart(2, "0"),
         co: editingExperience.co || "Unknown Company",
         role: editingExperience.role || "",
         stack: editingExperience.stack || "",
         when: editingExperience.when || "",
         where: editingExperience.where || "",
         points: editingExperience.points || [],
-        order: Number(editingExperience.order) || 0,
+        order: Number(editingExperience.order) || experiencesList.length + 1,
         visible: editingExperience.visible !== false,
       };
 
@@ -819,36 +932,41 @@ export default function AdminPage() {
 
   const toggleProjectVisibility = async (p: ProjectData) => {
     if (!p.id) return;
+    const previous = projectsList;
+    const nextVisible = p.visible === false;
+    // Flip the flag, then renumber so the visible reels stay 01, 02, 03…
+    const next = applySequence(
+      previous.map((item) => (item.id === p.id ? { ...item, visible: nextVisible } : item))
+    );
+
+    setProjectsList(next);
     try {
-      const nextVisible = p.visible === false;
-      const updatedPayload = {
-        ...p,
-        visible: nextVisible
-      };
-      const { id, ...payloadWithoutId } = updatedPayload;
-      await setDoc(doc(db, "projects", p.id), payloadWithoutId);
+      await updateDoc(doc(db, "projects", p.id), { visible: nextVisible });
+      await persistSequence("projects", previous, next);
       showStatus(`Project "${p.name}" is now ${nextVisible ? "visible" : "hidden"}.`);
-      fetchAdminData();
     } catch (err) {
       console.error(err);
+      setProjectsList(previous);
       showStatus("Failed to toggle project visibility.", "error");
     }
   };
 
   const toggleExperienceVisibility = async (e: ExperienceData) => {
     if (!e.id) return;
+    const previous = experiencesList;
+    const nextVisible = e.visible === false;
+    const next = applySequence(
+      previous.map((item) => (item.id === e.id ? { ...item, visible: nextVisible } : item))
+    );
+
+    setExperiencesList(next);
     try {
-      const nextVisible = e.visible === false;
-      const updatedPayload = {
-        ...e,
-        visible: nextVisible
-      };
-      const { id, ...payloadWithoutId } = updatedPayload;
-      await setDoc(doc(db, "experiences", e.id), payloadWithoutId);
+      await updateDoc(doc(db, "experiences", e.id), { visible: nextVisible });
+      await persistSequence("experiences", previous, next);
       showStatus(`Experience at "${e.co}" is now ${nextVisible ? "visible" : "hidden"}.`);
-      fetchAdminData();
     } catch (err) {
       console.error(err);
+      setExperiencesList(previous);
       showStatus("Failed to toggle experience visibility.", "error");
     }
   };
@@ -1260,13 +1378,32 @@ export default function AdminPage() {
                 </div>
               ) : (
                 <div className="space-y-4">
-                  {projectsList.map((p) => (
+                  <p className="text-[9px] uppercase tracking-wider text-foreground/30 font-mono flex items-center gap-1.5">
+                    <GripVertical className="h-3 w-3" /> Drag a reel to reposition it — numbers and order re-sequence automatically
+                  </p>
+                  {projectsList.map((p, idx) => (
                     <div
                       key={p.id}
-                      className="border border-rule bg-card/45 p-6 flex items-center justify-between gap-6 transition-all duration-300 hover:border-ember/50 hover:bg-card/70 group"
+                      draggable
+                      onDragStart={() => handleDragStart("projects", idx)}
+                      onDragEnter={() => handleDragEnter("projects", idx)}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        commitDrop("projects", idx);
+                      }}
+                      onDragEnd={() => setDragState(null)}
+                      className={`border bg-card/45 p-6 flex items-center justify-between gap-6 transition-all duration-300 hover:border-ember/50 hover:bg-card/70 group cursor-grab active:cursor-grabbing ${
+                        dragState?.list === "projects" && dragState.from === idx
+                          ? "border-ember/70 opacity-40"
+                          : dragState?.list === "projects" && dragState.over === idx
+                          ? "border-ember border-dashed"
+                          : "border-rule"
+                      }`}
                     >
                       <div className="space-y-2">
                         <div className="flex items-center gap-3 flex-wrap">
+                          <GripVertical className="h-4 w-4 text-foreground/25 group-hover:text-ember/70 transition-colors shrink-0" />
                           <span className="text-ember font-semibold font-mono text-[14px]">#{p.no}</span>
                           <span className="text-sm font-semibold tracking-wide">{p.name}</span>
                           {p.visible === false ? (
@@ -1331,26 +1468,21 @@ export default function AdminPage() {
 
                   <div className="grid grid-cols-2 gap-6 relative z-10">
                     <div>
-                      <label className="block text-[9px] text-foreground/45 mb-2 uppercase font-mono tracking-wider">Reel No</label>
-                      <input
-                        type="text"
-                        value={editingProject.no || ""}
-                        onChange={(e) => setEditingProject({ ...editingProject, no: e.target.value })}
-                        className="w-full bg-black border border-rule px-4 py-3 outline-none focus:border-ember focus:ring-1 focus:ring-ember/25 transition-all text-sm text-foreground font-mono"
-                        required
-                      />
+                      <label className="block text-[9px] text-foreground/45 mb-2 uppercase font-mono tracking-wider">Reel No (Auto)</label>
+                      <div className="w-full bg-black/50 border border-rule/50 px-4 py-3 text-sm text-foreground/60 font-mono">
+                        {editingProject.id ? editingProject.no || HIDDEN_NO : "—"}
+                      </div>
                     </div>
                     <div>
-                      <label className="block text-[9px] text-foreground/45 mb-2 uppercase font-mono tracking-wider">Sorting Order</label>
-                      <input
-                        type="number"
-                        value={editingProject.order ?? 0}
-                        onChange={(e) => setEditingProject({ ...editingProject, order: Number(e.target.value) })}
-                        className="w-full bg-black border border-rule px-4 py-3 outline-none focus:border-ember focus:ring-1 focus:ring-ember/25 transition-all text-sm text-foreground font-mono"
-                        required
-                      />
+                      <label className="block text-[9px] text-foreground/45 mb-2 uppercase font-mono tracking-wider">Sorting Order (Auto)</label>
+                      <div className="w-full bg-black/50 border border-rule/50 px-4 py-3 text-sm text-foreground/60 font-mono">
+                        {editingProject.id ? editingProject.order ?? "—" : "—"}
+                      </div>
                     </div>
                   </div>
+                  <p className="text-[9px] text-foreground/30 font-mono uppercase tracking-wider relative z-10 -mt-3">
+                    Set by dragging reels in the list. Hidden reels are skipped when numbering.
+                  </p>
 
                   <div className="flex items-center gap-3 border border-rule bg-black/30 p-4 relative z-10">
                     <input
@@ -1514,6 +1646,7 @@ export default function AdminPage() {
                 <button
                   onClick={() =>
                     setEditingExperience({
+                      no: String(experiencesList.length + 1).padStart(2, "0"),
                       co: "",
                       role: "",
                       stack: "",
@@ -1536,13 +1669,33 @@ export default function AdminPage() {
                 </div>
               ) : (
                 <div className="space-y-4">
-                  {experiencesList.map((e) => (
+                  <p className="text-[9px] uppercase tracking-wider text-foreground/30 font-mono flex items-center gap-1.5">
+                    <GripVertical className="h-3 w-3" /> Drag a shoot to reposition it — numbers and order re-sequence automatically
+                  </p>
+                  {experiencesList.map((e, idx) => (
                     <div
                       key={e.id}
-                      className="border border-rule bg-card/45 p-6 flex items-center justify-between gap-6 transition-all duration-300 hover:border-ember/50 hover:bg-card/70 group"
+                      draggable
+                      onDragStart={() => handleDragStart("experiences", idx)}
+                      onDragEnter={() => handleDragEnter("experiences", idx)}
+                      onDragOver={(ev) => ev.preventDefault()}
+                      onDrop={(ev) => {
+                        ev.preventDefault();
+                        commitDrop("experiences", idx);
+                      }}
+                      onDragEnd={() => setDragState(null)}
+                      className={`border bg-card/45 p-6 flex items-center justify-between gap-6 transition-all duration-300 hover:border-ember/50 hover:bg-card/70 group cursor-grab active:cursor-grabbing ${
+                        dragState?.list === "experiences" && dragState.from === idx
+                          ? "border-ember/70 opacity-40"
+                          : dragState?.list === "experiences" && dragState.over === idx
+                          ? "border-ember border-dashed"
+                          : "border-rule"
+                      }`}
                     >
                       <div className="space-y-1.5">
                         <div className="flex items-center gap-3 flex-wrap">
+                          <GripVertical className="h-4 w-4 text-foreground/25 group-hover:text-ember/70 transition-colors shrink-0" />
+                          <span className="text-ember font-semibold font-mono text-[14px]">#{e.no}</span>
                           <h4 className="text-sm font-semibold tracking-wide">{e.co}</h4>
                           {e.visible === false ? (
                             <span className="text-[8px] uppercase tracking-widest bg-red-950/20 border border-red-500/40 text-red-400 px-2 py-0.5 font-semibold">Hidden</span>
@@ -1610,16 +1763,17 @@ export default function AdminPage() {
                       />
                     </div>
                     <div>
-                      <label className="block text-[9px] text-foreground/45 mb-2 uppercase font-mono tracking-wider">Sorting Order</label>
-                      <input
-                        type="number"
-                        value={editingExperience.order ?? 0}
-                        onChange={(e) => setEditingExperience({ ...editingExperience, order: Number(e.target.value) })}
-                        className="w-full bg-black border border-rule px-4 py-3 outline-none focus:border-ember focus:ring-1 focus:ring-ember/25 transition-all text-sm text-foreground font-mono"
-                        required
-                      />
+                      <label className="block text-[9px] text-foreground/45 mb-2 uppercase font-mono tracking-wider">Shoot No / Order (Auto)</label>
+                      <div className="w-full bg-black/50 border border-rule/50 px-4 py-3 text-sm text-foreground/60 font-mono">
+                        {editingExperience.id
+                          ? `#${editingExperience.no || HIDDEN_NO} · pos ${editingExperience.order ?? "—"}`
+                          : "—"}
+                      </div>
                     </div>
                   </div>
+                  <p className="text-[9px] text-foreground/30 font-mono uppercase tracking-wider relative z-10 -mt-3">
+                    Set by dragging shoots in the list. Hidden shoots are skipped when numbering.
+                  </p>
 
                   <div className="flex items-center gap-3 border border-rule bg-black/30 p-4 relative z-10">
                     <input

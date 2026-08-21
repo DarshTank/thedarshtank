@@ -1200,7 +1200,10 @@ export default function Index() {
                 </div>
 
                 <div className="col-span-12 sm:col-span-2 md:col-span-1">
-                  <span className="font-mono text-xs text-ember">{p.no}</span>
+                  {/* Numbered off the visible list, so hidden reels leave no gap. */}
+                  <span className="font-mono text-xs text-ember">
+                    {String(idx + 1).padStart(2, "0")}
+                  </span>
                   <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-foreground/40 mt-2">
                     Reel
                     <br />
